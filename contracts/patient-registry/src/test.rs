@@ -1944,6 +1944,36 @@ fn test_get_records_by_type_returns_matching_records() {
 }
 
 #[test]
+fn test_get_records_by_type_missing_doctor_history_returns_not_found() {
+    let env = Env::default();
+    let (client, patient, doctor) = setup_for_filter(&env);
+
+    let record_id = client.add_medical_record(
+        &patient,
+        &doctor,
+        &encrypted_ref(&env, 12),
+        &Symbol::new(&env, "VISIT"),
+        &policy(&env),
+    );
+
+    env.as_contract(&client.address, || {
+        let mut record_data: RecordData = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MedicalRecord(record_id))
+            .unwrap();
+        record_data.history = Vec::new(&env);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MedicalRecord(record_id), &record_data);
+    });
+
+    let result = client.try_get_records_by_type(&patient, &patient, &Symbol::new(&env, "VISIT"));
+
+    assert_eq!(result, Err(Ok(ContractError::NotFound)));
+}
+
+#[test]
 fn test_get_records_by_type_ttl_refreshes_records() {
     let env = Env::default();
     env.ledger().set(make_ledger_info(100, 1_000_000));

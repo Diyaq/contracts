@@ -1564,24 +1564,13 @@ impl MedicalRegistry {
             {
                 if record_data.record_type == record_type {
                     // Map to MedicalRecord for compatibility
+                    let first_version =
+                        record_data.history.get(0).ok_or(ContractError::NotFound)?;
                     let mr = MedicalRecord {
                         record_id,
-                        doctor: record_data
-                            .history
-                            .get(0)
-                            .map(|v| v.updated_by.clone())
-                            .unwrap_or_else(|| {
-                                Address::from_str(
-                                    &env,
-                                    "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-                                )
-                            }),
+                        doctor: first_version.updated_by.clone(),
                         encrypted_ref: record_data.current_ref.clone(),
-                        timestamp: record_data
-                            .history
-                            .get(0)
-                            .map(|v| v.updated_at)
-                            .unwrap_or(0),
+                        timestamp: first_version.updated_at,
                         record_type: record_type.clone(),
                         policy: record_data.policy.clone(),
                     };
