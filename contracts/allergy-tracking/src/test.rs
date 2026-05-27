@@ -559,6 +559,27 @@ fn test_empty_allergen_rejected() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #8)")] // Error::InvalidAllergen = 8
+fn test_whitespace_only_allergen_rejected() {
+    let (env, contract_id, patient, provider, _) = create_test_env();
+    let client = AllergyTrackingContractClient::new(&env, &contract_id);
+
+    let mut reactions = Vec::new(&env);
+    reactions.push_back(String::from_str(&env, "reaction"));
+
+    client.record_allergy(
+        &patient,
+        &provider,
+        &String::from_str(&env, " \t "),
+        &Symbol::new(&env, "medication"),
+        &reactions,
+        &Symbol::new(&env, "mild"),
+        &None,
+        &true,
+    );
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #9)")] // Error::AllergenTooLong = 9
 fn test_long_allergen_rejected() {
     let (env, contract_id, patient, provider, _) = create_test_env();
@@ -690,6 +711,29 @@ fn test_valid_allergen_length_accepted() {
         &true,
     );
     assert_eq!(allergy_id2, 1);
+}
+
+#[test]
+fn test_valid_allergen_is_trimmed_before_storage() {
+    let (env, contract_id, patient, provider, _) = create_test_env();
+    let client = AllergyTrackingContractClient::new(&env, &contract_id);
+
+    let mut reactions = Vec::new(&env);
+    reactions.push_back(String::from_str(&env, "reaction"));
+
+    let allergy_id = client.record_allergy(
+        &patient,
+        &provider,
+        &String::from_str(&env, "  Penicillin\t"),
+        &Symbol::new(&env, "medication"),
+        &reactions,
+        &Symbol::new(&env, "mild"),
+        &None,
+        &true,
+    );
+
+    let allergy = client.get_allergy(&allergy_id);
+    assert_eq!(allergy.allergen, String::from_str(&env, "Penicillin"));
 }
 
 #[test]

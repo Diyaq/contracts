@@ -3,7 +3,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, String,
     Symbol, Vec,
 };
 
@@ -140,7 +140,7 @@ impl AllergyTrackingContract {
     ) -> Result<u64, Error> {
         provider_id.require_auth();
 
-        // Validate allergen name
+        let allergen = Self::trim_allergen(&allergen);
         Self::validate_allergen(&allergen)?;
 
         // Validate reaction types
@@ -579,6 +579,37 @@ impl AllergyTrackingContract {
             return Err(Error::AllergenTooLong);
         }
         Ok(())
+    }
+
+    fn trim_allergen(allergen: &String) -> String {
+        let bytes = allergen.to_bytes();
+        let mut start = 0;
+        let mut end = bytes.len();
+
+        while start < end {
+            if let Some(byte) = bytes.get(start) {
+                if !Self::is_ascii_whitespace(byte) {
+                    break;
+                }
+            }
+            start += 1;
+        }
+
+        while end > start {
+            if let Some(byte) = bytes.get(end - 1) {
+                if !Self::is_ascii_whitespace(byte) {
+                    break;
+                }
+            }
+            end -= 1;
+        }
+
+        let trimmed: Bytes = bytes.slice(start..end);
+        String::from(&trimmed)
+    }
+
+    fn is_ascii_whitespace(byte: u8) -> bool {
+        matches!(byte, b' ' | b'\n' | b'\r' | b'\t')
     }
 
     fn validate_reaction_types(reactions: &Vec<String>) -> Result<(), Error> {
