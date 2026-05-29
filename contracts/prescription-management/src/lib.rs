@@ -5,6 +5,10 @@ use soroban_sdk::{
 };
 use shared::temporal;
 
+/// Maximum number of transfer records retained per prescription.
+/// Attempting to exceed this returns `Error::TransferHistoryFull`.
+pub const MAX_TRANSFER_HISTORY: u32 = 100;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -384,6 +388,11 @@ impl PrescriptionContract {
         // Transfer limits for controlled substances
         if p.is_controlled && p.transfer_count >= 1 {
             return Err(Error::ControlledSubstanceViolation);
+        }
+
+        // Enforce the transfer-history storage cap before appending.
+        if p.transfer_history.len() >= MAX_TRANSFER_HISTORY {
+            return Err(Error::TransferHistoryFull);
         }
 
         // Create transfer record
@@ -974,12 +983,13 @@ impl PrescriptionContract {
         p.status = PrescriptionStatus::Active;
         p.last_dispensed = None;
 
-        // Extend validity if needed (30 days from refill)
+        // Extend validity if needed (30 days from refill). Use checked_add to
+        // guard against overflow when ledger timestamp is near u64::MAX.
         let new_valid_until = env
             .ledger()
             .timestamp()
-            .checked_add(30 * 24 * 60 * 60)
-            .ok_or(Error::TimestampOverflow)?;
+            .checked_add(30u64 * 24 * 60 * 60)
+            .ok_or(Error::InvalidValidityWindow)?;
         if new_valid_until > p.valid_until {
             p.valid_until = new_valid_until;
         }
