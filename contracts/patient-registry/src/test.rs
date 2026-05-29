@@ -3571,3 +3571,201 @@ fn test_verify_membership_patient_with_no_records_returns_false() {
     let proof: Vec<BytesN<32>> = Vec::new(&env);
     assert!(!client.verify_record_membership(&patient, &1, &proof));
 }
+
+// =====================================================
+//          GET_MEDICAL_RECORDS_PAGED TESTS
+// =====================================================
+
+/// Add `n` distinct records for `patient` via `doctor` and return their IDs.
+fn add_n_records(
+    client: &MedicalRegistryClient,
+    env: &Env,
+    patient: &Address,
+    doctor: &Address,
+    n: u8,
+) {
+    for i in 0..n {
+        let seed = if i == 0 { 200u8 } else { i };
+        client.add_medical_record(
+            patient,
+            doctor,
+            &encrypted_ref(env, seed),
+            &Symbol::new(env, "LAB"),
+            &policy(env),
+        );
+    }
+}
+
+#[test]
+fn test_paged_first_page_returns_correct_slice() {
+    let env = Env::default();
+    let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+
+    add_n_records(&client, &env, &patient, &doctor, 10);
+
+    let page = client.get_medical_records_paged(&patient, &patient, &0u32, &5u32);
+    assert_eq!(page.total, 10);
+    assert_eq!(page.records.len(), 5);
+}
+
+#[test]
+fn test_paged_second_page_returns_correct_slice() {
+    let env = Env::default();
+    let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+
+    add_n_records(&client, &env, &patient, &doctor, 10);
+
+    let page = client.get_medical_records_paged(&patient, &patient, &5u32, &5u32);
+    assert_eq!(page.total, 10);
+    assert_eq!(page.records.len(), 5);
+}
+
+#[test]
+fn test_paged_last_page_returns_remainder() {
+    let env = Env::default();
+    let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+
+    // 7 records, page size 5 → second page has 2
+    add_n_records(&client, &env, &patient, &doctor, 7);
+
+    let page = client.get_medical_records_paged(&patient, &patient, &5u32, &5u32);
+    assert_eq!(page.total, 7);
+    assert_eq!(page.records.len(), 2);
+}
+
+#[test]
+fn test_paged_offset_beyond_end_returns_empty_with_total() {
+    let env = Env::default();
+    let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+
+    add_n_records(&client, &env, &patient, &doctor, 3);
+
+    let page = client.get_medical_records_paged(&patient, &patient, &10u32, &5u32);
+    assert_eq!(page.total, 3);
+    assert_eq!(page.records.len(), 0);
+}
+
+#[test]
+fn test_paged_no_records_returns_empty_with_zero_total() {
+    let env = Env::default();
+    let (client, _admin, patient, _doctor, _v1) = setup_for_ttl(&env);
+
+    let page = client.get_medical_records_paged(&patient, &patient, &0u32, &10u32);
+    assert_eq!(page.total, 0);
+    assert_eq!(page.records.len(), 0);
+}
+
+#[test]
+fn test_paged_limit_zero_returns_invalid_pagination() {
+    let env = Env::default();
+    let (client, _admin, patient, _doctor, _v1) = setup_for_ttl(&env);
+
+    let result = client.try_get_medical_records_paged(&patient, &patient, &0u32, &0u32);
+    assert_eq!(result, Err(Ok(ContractError::InvalidPagination)));
+}
+
+#[test]
+fn test_paged_limit_exceeds_max_returns_invalid_pagination() {
+    let env = Env::default();
+    let (client, _admin, patient, _doctor, _v1) = setup_for_ttl(&env);
+
+    let result = client.try_get_medical_records_paged(&patient, &patient, &0u32, &51u32);
+    assert_eq!(result, Err(Ok(ContractError::InvalidPagination)));
+}
+
+#[test]
+fn test_paged_limit_at_max_is_accepted() {
+    let env = Env::default();
+    let (client, _admin, patient, _doctor, _v1) = setup_for_ttl(&env);
+
+    // MAX_PAGE_SIZE = 50 must be accepted
+    let result = client.try_get_medical_records_paged(&patient, &patient, &0u32, &50u32);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_paged_unauthorized_caller_rejected() {
+    let env = Env::default();
+    let (client, _admin, patient, _doctor, _v1) = setup_for_ttl(&env);
+    let stranger = Address::generate(&env);
+
+    let result = client.try_get_medical_records_paged(&patient, &stranger, &0u32, &10u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_paged_authorized_doctor_can_read() {
+    let env = Env::default();
+    let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+
+    add_n_records(&client, &env, &patient, &doctor, 3);
+
+    // doctor was granted access in setup_for_ttl
+    let page = client.get_medical_records_paged(&patient, &doctor, &0u32, &10u32);
+    assert_eq!(page.total, 3);
+    assert_eq!(page.records.len(), 3);
+}
+
+#[test]
+fn test_paged_total_is_consistent_across_pages() {
+    let env = Env::default();
+    let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+
+    add_n_records(&client, &env, &patient, &doctor, 12);
+
+    let p1 = client.get_medical_records_paged(&patient, &patient, &0u32, &5u32);
+    let p2 = client.get_medical_records_paged(&patient, &patient, &5u32, &5u32);
+    let p3 = client.get_medical_records_paged(&patient, &patient, &10u32, &5u32);
+
+    // total must be the same on every page
+    assert_eq!(p1.total, 12);
+    assert_eq!(p2.total, 12);
+    assert_eq!(p3.total, 12);
+
+    // combined record count equals total
+    assert_eq!(p1.records.len() + p2.records.len() + p3.records.len(), 12);
+}
+
+#[test]
+fn test_paged_records_match_unpaged_records() {
+    let env = Env::default();
+    let (client, _admin, patient, doctor, _v1) = setup_for_ttl(&env);
+
+    add_n_records(&client, &env, &patient, &doctor, 6);
+
+    let all = client.get_medical_records(&patient, &patient);
+
+    // Collect all records via pagination
+    let p1 = client.get_medical_records_paged(&patient, &patient, &0u32, &4u32);
+    let p2 = client.get_medical_records_paged(&patient, &patient, &4u32, &4u32);
+
+    assert_eq!(p1.records.len() + p2.records.len(), all.len() as u32);
+
+    // Spot-check first and last record IDs match
+    assert_eq!(
+        p1.records.get(0).unwrap().record_id,
+        all.get(0).unwrap().record_id
+    );
+    assert_eq!(
+        p2.records.get(1).unwrap().record_id,
+        all.get(5).unwrap().record_id
+    );
+}
+
+#[test]
+fn test_paged_deregistered_patient_accessible_by_admin_only() {
+    let env = Env::default();
+    let (client, admin, patient, doctor, _v1) = setup_for_ttl(&env);
+
+    add_n_records(&client, &env, &patient, &doctor, 3);
+    client.deregister_patient(&patient);
+
+    // Admin can still page through records
+    let page = client.get_medical_records_paged(&patient, &admin, &0u32, &10u32);
+    assert_eq!(page.total, 3);
+
+    // Non-admin is rejected
+    let stranger = Address::generate(&env);
+    let result = client.try_get_medical_records_paged(&patient, &stranger, &0u32, &10u32);
+    assert!(result.is_err());
+}
