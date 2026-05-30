@@ -206,4 +206,57 @@ mod tests {
         let short_hash = Bytes::from_array(&env, &[0u8; 16]);
         assert!(!client.verify_record_integrity(&patient, &record_id, &short_hash));
     }
+
+    // ── deregister_patient tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_deregister_patient_revokes_all_consents() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, patient, provider) = setup(&env);
+        let provider2 = Address::generate(&env);
+
+        client.grant_consent(&patient, &provider);
+        client.grant_consent(&patient, &provider2);
+
+        // Both providers have consent
+        assert!(client.try_create_record(
+            &patient,
+            &provider,
+            &encrypted_ref(&env, 1),
+            &String::from_str(&env, "LAB"),
+            &policy(&env),
+        ).is_ok());
+
+        client.deregister_patient(&patient);
+
+        // After deregistration, neither provider can create records
+        let r1 = client.try_create_record(
+            &patient,
+            &provider,
+            &encrypted_ref(&env, 2),
+            &String::from_str(&env, "LAB"),
+            &policy(&env),
+        );
+        assert!(matches!(r1, Err(Ok(Error::ConsentNotGranted))));
+
+        let r2 = client.try_create_record(
+            &patient,
+            &provider2,
+            &encrypted_ref(&env, 3),
+            &String::from_str(&env, "LAB"),
+            &policy(&env),
+        );
+        assert!(matches!(r2, Err(Ok(Error::ConsentNotGranted))));
+    }
+
+    #[test]
+    fn test_deregister_patient_no_consents_is_noop() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, patient, _provider) = setup(&env);
+
+        // Should not panic when patient has no consents
+        client.deregister_patient(&patient);
+    }
 }
