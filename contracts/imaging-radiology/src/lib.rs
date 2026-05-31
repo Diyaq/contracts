@@ -640,3 +640,5 @@ impl ImagingRadiology {
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod cid_fuzz_tests;
