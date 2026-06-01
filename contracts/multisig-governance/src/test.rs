@@ -474,3 +474,84 @@ fn test_approve_signer_change_expired_returns_error() {
         .unwrap();
     assert_eq!(err, Error::Expired);
 }
+
+// ── Key rotation attack hardening (#413) ─────────────────────────────────────
+
+#[test]
+fn test_new_signer_cannot_approve_old_proposal() {
+    // s0 proposes, then s3 is added. s3 should NOT be able to vote on the
+    // old proposal because they were not in the eligible_signers snapshot.
+    let (env, signers, client) = setup(3, 3);
+    let s0 = signers.get(0).unwrap();
+    let new_signer = Address::generate(&env);
+
+    client.propose_multisig_action(&s0, &symbol_short!("export"), &payload(&env));
+
+    // Add new signer via signer-change proposal.
+    let s1 = signers.get(1).unwrap();
+    let s2 = signers.get(2).unwrap();
+    client.propose_signer_change(&s0, &SignerChangeKind::Add, &new_signer);
+    client.approve_signer_change(&s1);
+    client.approve_signer_change(&s2);
+    // new_signer is now a current signer.
+
+    // new_signer tries to approve the OLD proposal — they were not in eligible_signers.
+    let err = client
+        .try_approve_multisig_action(&new_signer, &symbol_short!("export"))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::NotASigner);
+}
+
+#[test]
+fn test_removed_signer_votes_invalidated() {
+    // s0 proposes, s0 and s1 approve. Then s1 is removed via signer-change.
+    // s1's prior approval should be stripped from the in-flight proposal.
+    let (env, signers, client) = setup_with_quorum(4, 3, 2);
+    let s0 = signers.get(0).unwrap();
+    let s1 = signers.get(1).unwrap();
+    let s2 = signers.get(2).unwrap();
+    let s3 = signers.get(3).unwrap();
+
+    // Create a proposal that needs 3 approvals.
+    client.propose_multisig_action(&s0, &symbol_short!("export"), &payload(&env));
+    client.approve_multisig_action(&s1, &symbol_short!("export"));
+
+    // At this point approvals = [s0, s1]. Remove s1.
+    client.propose_signer_change(&s0, &SignerChangeKind::Remove, &s1);
+    client.approve_signer_change(&s2);
+    client.approve_signer_change(&s3);
+    // s1 is now removed; their vote should have been invalidated.
+
+    // Proposal should still be Pending (s0's vote remains, s1's was stripped).
+    let proposal = client.get_proposal(&symbol_short!("export"));
+    assert_eq!(proposal.status, ProposalStatus::Pending);
+    // Only s0's approval should remain.
+    assert_eq!(proposal.approvals.len(), 1);
+}
+
+#[test]
+fn test_signer_snapshot_stored_at_proposal_time() {
+    let (env, signers, client) = setup(3, 2);
+    let s0 = signers.get(0).unwrap();
+    client.propose_multisig_action(&s0, &symbol_short!("export"), &payload(&env));
+    let proposal = client.get_proposal(&symbol_short!("export"));
+    // Snapshot must match the 3 initial signers.
+    assert_eq!(proposal.eligible_signers.len(), 3);
+}
+
+#[test]
+fn test_abstain_counts_toward_quorum() {
+    let (env, signers, client) = setup_with_quorum(3, 2, 3);
+    let s0 = signers.get(0).unwrap();
+    let s1 = signers.get(1).unwrap();
+    let s2 = signers.get(2).unwrap();
+
+    client.propose_multisig_action(&s0, &symbol_short!("export"), &payload(&env));
+    client.abstain_multisig_action(&s1, &symbol_short!("export"));
+    client.abstain_multisig_action(&s2, &symbol_short!("export"));
+
+    let proposal = client.get_proposal(&symbol_short!("export"));
+    // All 3 voted (1 approval, 2 abstentions) → quorum met, threshold not met → Failed.
+    assert_eq!(proposal.status, ProposalStatus::Failed);
+}

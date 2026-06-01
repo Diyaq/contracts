@@ -258,6 +258,11 @@ impl MultisigGovernance {
             return Err(Error::Expired);
         }
 
+        // Signer must have been eligible at proposal-creation time (snapshot).
+        if !Self::in_eligible_signers(&proposal, &signer) {
+            return Err(Error::NotASigner);
+        }
+
         // Reject duplicate approvals from the same signer.
         for i in 0..proposal.approvals.len() {
             if proposal.approvals.get(i).ok_or(Error::NotASigner)? == signer {
@@ -281,6 +286,111 @@ impl MultisigGovernance {
             .persistent()
             .get(&DataKey::Proposal(action_id))
             .ok_or(Error::ProposalNotFound)
+    }
+
+    /// Record an abstention for an in-flight proposal.
+    ///
+    /// Abstentions count toward quorum but not toward the approval threshold.
+    /// When all eligible signers have participated (approved or abstained) and
+    /// the threshold is still not reached, the proposal is marked `Failed`.
+    pub fn abstain_multisig_action(
+        env: Env,
+        signer: Address,
+        action_id: Symbol,
+    ) -> Result<(), Error> {
+        signer.require_auth();
+        Self::assert_signer(&env, &signer)?;
+
+        let key = DataKey::Proposal(action_id.clone());
+        let mut proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::ProposalNotFound)?;
+
+        if proposal.status != ProposalStatus::Pending {
+            return Err(Error::AlreadyFinalized);
+        }
+
+        let ttl: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Ttl)
+            .ok_or(Error::NotInitialized)?;
+        if env.ledger().timestamp() > proposal.proposed_at + ttl {
+            return Err(Error::Expired);
+        }
+
+        // Must be in the creation-time snapshot.
+        if !Self::in_eligible_signers(&proposal, &signer) {
+            return Err(Error::NotASigner);
+        }
+
+        // Deduplicate across approvals and abstentions.
+        for i in 0..proposal.approvals.len() {
+            if proposal.approvals.get(i).ok_or(Error::NotASigner)? == signer {
+                return Err(Error::AlreadyVoted);
+            }
+        }
+        for i in 0..proposal.abstentions.len() {
+            if proposal.abstentions.get(i).ok_or(Error::NotASigner)? == signer {
+                return Err(Error::AlreadyVoted);
+            }
+        }
+
+        proposal.abstentions.push_back(signer.clone());
+
+        // If all eligible signers have now participated and threshold is not met → Failed.
+        let participation = proposal.approvals.len() + proposal.abstentions.len();
+        if participation >= proposal.eligible_signers.len()
+            && proposal.approvals.len()
+                < env
+                    .storage()
+                    .persistent()
+                    .get::<_, u32>(&DataKey::Threshold)
+                    .unwrap_or(u32::MAX)
+        {
+            proposal.status = ProposalStatus::Failed;
+        }
+
+        env.storage().persistent().set(&key, &proposal);
+        env.events()
+            .publish((symbol_short!("abstained"), action_id), signer);
+        Ok(())
+    }
+
+    /// Mark an expired proposal as `Failed` without requiring a vote.
+    ///
+    /// Returns `Expired` (re-used as "not yet expired") if the TTL has not
+    /// elapsed — callers should check the error meaning.
+    pub fn finalize_expired(env: Env, action_id: Symbol) -> Result<(), Error> {
+        let key = DataKey::Proposal(action_id.clone());
+        let mut proposal: Proposal = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::ProposalNotFound)?;
+
+        if proposal.status != ProposalStatus::Pending {
+            return Err(Error::AlreadyFinalized);
+        }
+
+        let ttl: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Ttl)
+            .ok_or(Error::NotInitialized)?;
+
+        if env.ledger().timestamp() <= proposal.proposed_at + ttl {
+            // Not yet expired.
+            return Err(Error::Expired);
+        }
+
+        proposal.status = ProposalStatus::Failed;
+        env.storage().persistent().set(&key, &proposal);
+        env.events()
+            .publish((symbol_short!("expired"), action_id), env.ledger().timestamp());
+        Ok(())
     }
 
     // ── signer lifecycle ──────────────────────────────────────────────────────
@@ -448,6 +558,9 @@ impl MultisigGovernance {
                         }
                     }
                     signers = new_signers;
+
+                    // Invalidate in-flight approvals from the removed signer (#413).
+                    Self::invalidate_signer_votes(&env, &proposal.target);
                 }
             }
 
@@ -538,5 +651,56 @@ impl MultisigGovernance {
             }
         }
         Err(Error::NotASigner)
+    }
+
+    /// Returns `true` if `addr` appears in the proposal's creation-time signer snapshot.
+    fn in_eligible_signers(proposal: &Proposal, addr: &Address) -> bool {
+        for i in 0..proposal.eligible_signers.len() {
+            if let Some(s) = proposal.eligible_signers.get(i) {
+                if &s == addr {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Remove `removed` signer's approvals and abstentions from every in-flight
+    /// (Pending) proposal tracked in `ProposalIds`.
+    fn invalidate_signer_votes(env: &Env, removed: &Address) {
+        let ids: Vec<Symbol> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ProposalIds)
+            .unwrap_or(Vec::new(env));
+
+        for id in ids.iter() {
+            let key = DataKey::Proposal(id.clone());
+            if let Some(mut proposal) = env.storage().persistent().get::<_, Proposal>(&key) {
+                if proposal.status != ProposalStatus::Pending {
+                    continue;
+                }
+
+                // Remove from approvals.
+                let mut new_approvals: Vec<Address> = Vec::new(env);
+                for a in proposal.approvals.iter() {
+                    if &a != removed {
+                        new_approvals.push_back(a);
+                    }
+                }
+                proposal.approvals = new_approvals;
+
+                // Remove from abstentions.
+                let mut new_abstentions: Vec<Address> = Vec::new(env);
+                for a in proposal.abstentions.iter() {
+                    if &a != removed {
+                        new_abstentions.push_back(a);
+                    }
+                }
+                proposal.abstentions = new_abstentions;
+
+                env.storage().persistent().set(&key, &proposal);
+            }
+        }
     }
 }
