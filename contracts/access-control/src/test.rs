@@ -441,6 +441,83 @@ fn test_register_did_update_replaces_value() {
     assert_eq!(stored, did_v2);
 }
 
+// ---------------------------------------------------------------------------
+// DID format validation — RFC 3986 / W3C DID spec compliance
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_did_missing_method_rejected() {
+    // "did:" with no method segment
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    client.initialize(&admin);
+
+    let result = client.try_register_did(&user, &Bytes::from_slice(&env, b"did:"));
+    assert_eq!(result, Err(Ok(ContractError::InvalidDidFormat)));
+}
+
+#[test]
+fn test_did_empty_method_rejected() {
+    // "did::identifier" — empty method between the two colons
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    client.initialize(&admin);
+
+    let result = client.try_register_did(&user, &Bytes::from_slice(&env, b"did::identifier"));
+    assert_eq!(result, Err(Ok(ContractError::InvalidDidFormat)));
+}
+
+#[test]
+fn test_did_uppercase_method_rejected() {
+    // W3C DID spec §3.1: method must be lowercase
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    client.initialize(&admin);
+
+    let result = client.try_register_did(&user, &Bytes::from_slice(&env, b"did:Stellar:abc"));
+    assert_eq!(result, Err(Ok(ContractError::InvalidDidFormat)));
+}
+
+#[test]
+fn test_did_invalid_char_in_method_rejected() {
+    // Space in method segment
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    client.initialize(&admin);
+
+    let result = client.try_register_did(&user, &Bytes::from_slice(&env, b"did:bad method:id"));
+    assert_eq!(result, Err(Ok(ContractError::InvalidDidFormat)));
+}
+
+#[test]
+fn test_did_missing_identifier_rejected() {
+    // "did:stellar:" — method present but identifier empty
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    client.initialize(&admin);
+
+    let result = client.try_register_did(&user, &Bytes::from_slice(&env, b"did:stellar:"));
+    assert_eq!(result, Err(Ok(ContractError::InvalidDidFormat)));
+}
+
+#[test]
+fn test_did_valid_methods_accepted() {
+    // did:stellar: and did:key: are both valid DID methods
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let u1 = Address::generate(&env);
+    let u2 = Address::generate(&env);
+    client.initialize(&admin);
+
+    client.register_did(&u1, &Bytes::from_slice(&env, b"did:stellar:GABC123"));
+    client.register_did(&u2, &Bytes::from_slice(&env, b"did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"));
+}
+
 #[test]
 fn test_grant_access_grantor_not_registered() {
     let (env, client) = setup();
