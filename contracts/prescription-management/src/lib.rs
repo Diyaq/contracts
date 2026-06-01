@@ -1,10 +1,10 @@
 #![no_std]
 
-use soroban_sdk::{
-    Address, BytesN, Env, String, Symbol, Vec, contract, contracterror, contractimpl,
-    contracttype, contractclient,
-};
 use shared::temporal;
+use soroban_sdk::{
+    Address, BytesN, Env, String, Symbol, Vec, contract, contractclient, contracterror,
+    contractimpl, contracttype,
+};
 
 // ── Allergy-management client ─────────────────────────────────────────────────
 
@@ -309,9 +309,7 @@ impl PrescriptionContract {
         env.storage()
             .persistent()
             .set(&DataKey::AllergyRegistry, &allergy_registry);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Admin, &admin);
+        env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage()
             .persistent()
             .set(&DataKey::AllergyStrictMode, &strict_mode);
@@ -1011,7 +1009,7 @@ impl PrescriptionContract {
     ) -> Result<(), Error> {
         provider_id.require_auth();
 
-        if override_reason == String::from_str(&env, "") {
+        if is_blank(&override_reason) {
             return Err(Error::MissingOverrideReason);
         }
 
@@ -1260,7 +1258,9 @@ impl PrescriptionContract {
         // Cannot recall if already cancelled, expired, or recalled
         if matches!(
             p.status,
-            PrescriptionStatus::Cancelled | PrescriptionStatus::Expired | PrescriptionStatus::Recalled
+            PrescriptionStatus::Cancelled
+                | PrescriptionStatus::Expired
+                | PrescriptionStatus::Recalled
         ) {
             return Err(Error::InvalidStatusTransition);
         }
@@ -1309,10 +1309,7 @@ impl PrescriptionContract {
     }
 
     /// Retrieve recall information for a prescription.
-    pub fn get_prescription_recall(
-        env: Env,
-        prescription_id: u64,
-    ) -> Result<RecallRecord, Error> {
+    pub fn get_prescription_recall(env: Env, prescription_id: u64) -> Result<RecallRecord, Error> {
         let recall_id = env
             .storage()
             .persistent()
@@ -1326,10 +1323,7 @@ impl PrescriptionContract {
     }
 
     /// Check if a prescription has been recalled.
-    pub fn is_prescription_recalled(
-        env: Env,
-        prescription_id: u64,
-    ) -> bool {
+    pub fn is_prescription_recalled(env: Env, prescription_id: u64) -> bool {
         if let Some(recall_id) = env
             .storage()
             .persistent()
@@ -1528,6 +1522,13 @@ fn is_valid_severity(env: &Env, severity: &Symbol) -> bool {
 
 fn requires_documentation(env: &Env, severity: &Symbol) -> bool {
     *severity == Symbol::new(env, "major") || *severity == Symbol::new(env, "contraindicated")
+}
+
+fn is_blank(s: &String) -> bool {
+    s.is_empty()
+        || s.to_bytes()
+            .iter()
+            .all(|b| b == b' ' || b == b'\t' || b == b'\n' || b == b'\r')
 }
 
 fn contains_string(values: &Vec<String>, needle: &String) -> bool {
