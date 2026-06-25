@@ -9,8 +9,9 @@ use shared::privacy::{
     EncryptedEnvelopeRef, PolicyMetadata,
 };
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
-    xdr::ToXdr, Address, Bytes, BytesN, Env, Map, String, Symbol, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error,
+    symbol_short, token, vec, xdr::ToXdr, Address, Bytes, BytesN, Env, IntoVal, Map, String,
+    Symbol, Vec,
 };
 use ttl_config::critical::{LEDGER_BUMP_AMOUNT, LEDGER_THRESHOLD};
 
@@ -28,6 +29,15 @@ pub const ARCHIVE_LEDGER_BUMP_AMOUNT: u32 = 518_400;
 pub enum PatientStatus {
     Active,
     Deregistered,
+}
+
+/// Emitted on every patient status transition (Active ↔ Deregistered).
+#[contractevent]
+pub struct PatientStatusChanged {
+    pub patient: Address,
+    pub old_status: PatientStatus,
+    pub new_status: PatientStatus,
+    pub timestamp: u64,
 }
 
 /// --------------------
@@ -118,6 +128,8 @@ pub enum DataKey {
     /// Merkle root for a patient's records.
     /// Merkle root over the patient's ordered record IDs (see `merkle` module).
     MerkleRoot(Address),
+    /// Optional provider-registry contract address for cross-contract verification.
+    ProviderRegistry,
 }
 
 /// --------------------
@@ -249,6 +261,7 @@ pub enum ContractError {
     RecordNotFound = 25,
     NoHistoryFound = 26,
     InvalidAddress = 27,
+    ProviderNotRegistered = 28,
 }
 
 pub fn validate_cid(cid: &Bytes) -> Result<(), ContractError> {
@@ -777,6 +790,7 @@ impl MedicalRegistry {
             return Err(ContractError::AlreadyDeregistered);
         }
 
+        let old_status = data.status.clone();
         data.status = PatientStatus::Deregistered;
         env.storage().persistent().set(&key, &data);
 
@@ -789,10 +803,52 @@ impl MedicalRegistry {
             .persistent()
             .remove(&DataKey::AuthorizedDoctors(patient.clone()));
 
+        let ts = env.ledger().timestamp();
         env.events().publish(
-            (symbol_short!("pat_dreg"), patient),
-            env.ledger().timestamp(),
+            (symbol_short!("pat_dreg"), patient.clone()),
+            ts,
         );
+        PatientStatusChanged {
+            patient: patient.clone(),
+            old_status,
+            new_status: PatientStatus::Deregistered,
+            timestamp: ts,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Reactivate a previously deregistered patient (admin-only).
+    pub fn reactivate_patient(env: Env, patient: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env);
+
+        let key = DataKey::Patient(patient.clone());
+        let mut data: PatientData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::NotFound)?;
+
+        if data.status != PatientStatus::Deregistered {
+            return Err(ContractError::NotFound);
+        }
+
+        let old_status = data.status.clone();
+        data.status = PatientStatus::Active;
+        env.storage().persistent().set(&key, &data);
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Deregistered(patient.clone()));
+
+        let ts = env.ledger().timestamp();
+        PatientStatusChanged {
+            patient: patient.clone(),
+            old_status,
+            new_status: PatientStatus::Active,
+            timestamp: ts,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -1116,6 +1172,19 @@ impl MedicalRegistry {
             .set(&DataKey::TotalProviders, &(total_providers + 1));
     }
 
+    /// Store the provider-registry contract address (admin-only).
+    /// Once set, `grant_access` will cross-call `is_provider` before authorising a doctor.
+    pub fn set_provider_registry(
+        env: Env,
+        provider_registry: Address,
+    ) -> Result<(), ContractError> {
+        Self::require_admin(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::ProviderRegistry, &provider_registry);
+        Ok(())
+    }
+
     // =====================================================
     //            MEDICAL RECORD ACCESS CONTROL
     // =====================================================
@@ -1129,6 +1198,10 @@ impl MedicalRegistry {
         Self::require_not_frozen(&env);
         require_patient_or_guardian(&env, &patient, &caller)?;
         Self::require_not_on_hold(&env, &patient)?;
+
+        if !Self::is_provider_registered(&env, &doctor) {
+            return Err(ContractError::ProviderNotRegistered);
+        }
 
         let key = DataKey::AuthorizedDoctors(patient.clone());
         let mut map: Map<Address, bool> = env
@@ -2383,6 +2456,21 @@ impl MedicalRegistry {
     // =====================================================
     //                  PRIVATE HELPERS
     // =====================================================
+
+    /// Returns true if the provider-registry is not configured, or if the address
+    /// is a registered and active provider in the configured registry.
+    fn is_provider_registered(env: &Env, provider: &Address) -> bool {
+        let registry: Address = match env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::ProviderRegistry)
+        {
+            Some(r) => r,
+            None => return true,
+        };
+        let args: Vec<soroban_sdk::Val> = vec![env, provider.clone().into_val(env)];
+        env.invoke_contract(&registry, &Symbol::new(env, "is_provider"), args)
+    }
 
     fn require_not_frozen(env: &Env) {
         let frozen: bool = env
