@@ -545,8 +545,10 @@ impl AllergyTrackingContract {
     pub fn check_drug_allergy_interaction(
         env: Env,
         patient_id: Address,
+        requester: Address,
         drug_name: String,
     ) -> Result<Vec<InteractionWarning>, Error> {
+        requester.require_auth();
         let patient_key = DataKey::PatientAllergies(patient_id.clone());
         let patient_allergies: Vec<u64> = env
             .storage()

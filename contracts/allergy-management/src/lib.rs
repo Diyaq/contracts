@@ -400,8 +400,16 @@ impl AllergyManagement {
     pub fn check_drug_allergy_interaction(
         env: Env,
         patient_id: Address,
+        requester: Address,
         drug_name: String,
     ) -> Result<Vec<AllergyInteraction>, Error> {
+        requester.require_auth();
+
+        // Check access permissions (same as get_active_allergies)
+        if !storage::check_access_permission(&env, &patient_id, &requester) {
+            return Err(Error::AccessDenied);
+        }
+
         let mut interactions = Vec::new(&env);
 
         // Get all active allergies for patient
