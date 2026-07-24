@@ -552,11 +552,9 @@ impl AllergyManagement {
             .persistent()
             .remove(&DataKey::PatientAllergies(patient_id.clone()));
 
-        // Remove all access grants for this patient (iterate known providers via allergy records)
-        // Access grants are keyed AccessControl(patient, provider); we remove the whole patient
-        // namespace by clearing grants found during the allergy scan above.
-        // Since we don't have a separate provider index, we rely on the fact that
-        // AccessControl entries are only meaningful while PatientAllergies exists.
+        // Remove all AccessControl(patient, *) grants using the provider index
+        storage::remove_all_access_grants(&env, &patient_id);
+
         // Emit cleanup event.
         env.events().publish(
             (symbol_short!("pat_dreg"), patient_id),

@@ -93,12 +93,62 @@ pub fn grant_access(env: &Env, patient_id: &Address, provider_id: &Address) {
     let key = DataKey::AccessControl(patient_id.clone(), provider_id.clone());
     env.storage().persistent().set(&key, &true);
     extend_critical_ttl(env, &key);
+
+    // Maintain per-patient provider index
+    let index_key = DataKey::GrantedProviders(patient_id.clone());
+    let mut providers: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&index_key)
+        .unwrap_or(Vec::new(env));
+    let mut already = false;
+    for p in providers.iter() {
+        if p == *provider_id {
+            already = true;
+            break;
+        }
+    }
+    if !already {
+        providers.push_back(provider_id.clone());
+        env.storage().persistent().set(&index_key, &providers);
+        extend_critical_ttl(env, &index_key);
+    }
 }
 
 /// Revoke access from a provider
 pub fn revoke_access(env: &Env, patient_id: &Address, provider_id: &Address) {
     let key = DataKey::AccessControl(patient_id.clone(), provider_id.clone());
     env.storage().persistent().remove(&key);
+
+    // Remove from per-patient provider index
+    let index_key = DataKey::GrantedProviders(patient_id.clone());
+    let providers: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&index_key)
+        .unwrap_or(Vec::new(env));
+    let mut updated: Vec<Address> = Vec::new(env);
+    for p in providers.iter() {
+        if p != *provider_id {
+            updated.push_back(p);
+        }
+    }
+    env.storage().persistent().set(&index_key, &updated);
+}
+
+/// Remove all AccessControl grants for a patient (used during deregistration)
+pub fn remove_all_access_grants(env: &Env, patient_id: &Address) {
+    let index_key = DataKey::GrantedProviders(patient_id.clone());
+    let providers: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&index_key)
+        .unwrap_or(Vec::new(env));
+    for provider_id in providers.iter() {
+        let key = DataKey::AccessControl(patient_id.clone(), provider_id.clone());
+        env.storage().persistent().remove(&key);
+    }
+    env.storage().persistent().remove(&index_key);
 }
 
 /// Check if a requester has access to patient allergies
