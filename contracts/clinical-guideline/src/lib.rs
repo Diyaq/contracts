@@ -84,11 +84,28 @@ pub struct GuidelineMetadata {
     pub evidence_level: Symbol,
 }
 
+// --- Data key enum ---
+#[contracttype]
+pub enum DataKey {
+    Admin,
+    Guideline(String),
+}
+
 #[contract]
 pub struct ClinicalGuidelineContract;
 
 #[contractimpl]
 impl ClinicalGuidelineContract {
+    /// Initialize the contract with a stored admin address.
+    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::NotAuthorized);
+        }
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        Ok(())
+    }
+
     pub fn register_clinical_guideline(
         env: Env,
         admin: Address,
@@ -100,6 +117,22 @@ impl ClinicalGuidelineContract {
     ) -> Result<(), Error> {
         admin.require_auth();
 
+        // Verify caller matches stored admin
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotAuthorized)?;
+        if admin != stored_admin {
+            return Err(Error::NotAuthorized);
+        }
+
+        // Reject silent overwrite — existing guideline_id must not already exist
+        let key = DataKey::Guideline(guideline_id.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(Error::InvalidInput);
+        }
+
         let metadata = GuidelineMetadata {
             condition,
             criteria_hash,
@@ -107,7 +140,43 @@ impl ClinicalGuidelineContract {
             evidence_level,
         };
 
-        env.storage().persistent().set(&guideline_id, &metadata);
+        env.storage().persistent().set(&key, &metadata);
+        Ok(())
+    }
+
+    pub fn update_clinical_guideline(
+        env: Env,
+        admin: Address,
+        guideline_id: String,
+        condition: String,
+        criteria_hash: BytesN<32>,
+        recommendation_hash: BytesN<32>,
+        evidence_level: Symbol,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotAuthorized)?;
+        if admin != stored_admin {
+            return Err(Error::NotAuthorized);
+        }
+
+        let key = DataKey::Guideline(guideline_id.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(Error::GuidelineNotFound);
+        }
+
+        let metadata = GuidelineMetadata {
+            condition,
+            criteria_hash,
+            recommendation_hash,
+            evidence_level,
+        };
+
+        env.storage().persistent().set(&key, &metadata);
         Ok(())
     }
 
@@ -121,7 +190,7 @@ impl ClinicalGuidelineContract {
         let metadata: GuidelineMetadata = env
             .storage()
             .persistent()
-            .get(&guideline_id)
+            .get(&DataKey::Guideline(guideline_id.clone()))
             .ok_or(Error::GuidelineNotFound)?;
 
         let is_applicable = metadata.criteria_hash == patient_data_hash;
