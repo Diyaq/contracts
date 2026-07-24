@@ -734,6 +734,9 @@ impl AllergyTrackingContract {
         drug2: String,
     ) -> Result<(), Error> {
         admin.require_auth();
+        if !Self::is_admin(&env, &admin) {
+            return Err(Error::Unauthorized);
+        }
 
         let key1 = DataKey::DrugCrossSensitivity(drug1.clone());
         let mut related1: Vec<String> = env
