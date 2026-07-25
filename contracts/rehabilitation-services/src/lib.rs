@@ -1,5 +1,6 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
+#![allow(deprecated)]
 
 //! # Rehabilitation Services Contract
 //!
@@ -242,6 +243,8 @@ pub enum DataKey {
     PlanVersion(u64),
     /// plan_id -> Vec<PlanVersionEntry>
     PlanVersionHistory(u64),
+    /// plan_id -> u64 (number of goals set for this plan, used as plan_version)
+    PlanGoalCount(u64),
 }
 
 #[contracttype]
@@ -801,10 +804,7 @@ impl RehabilitationServicesContract {
     }
 
     /// Retrieve the full version history for a treatment plan.
-    pub fn get_treatment_plan_history(
-        env: Env,
-        plan_id: u64,
-    ) -> Vec<PlanVersionEntry> {
+    pub fn get_treatment_plan_history(env: Env, plan_id: u64) -> Vec<PlanVersionEntry> {
         // Bump TTL on read
         env.storage().instance().extend_ttl(0, 5000);
 
@@ -922,26 +922,13 @@ impl RehabilitationServicesContract {
             .unwrap_or(0u64)
             + 1;
 
-        // Version is the number of goals already set for this plan (monotonic).
-        let plan_version: u64 = {
-            let mut count = 0u64;
-            let max = goal_id;
-            // Count goals belonging to this plan (linear scan over goal ids up to current).
-            // Using the stored counter as the upper bound is correct because goal_id is
-            // globally monotonic and we haven't persisted this new goal yet.
-            for gid in 1..max {
-                if let Some(g) = env
-                    .storage()
-                    .instance()
-                    .get::<_, MeasurableGoal>(&DataKey::MeasurableGoal(gid))
-                {
-                    if g.plan_id == plan_id {
-                        count += 1;
-                    }
-                }
-            }
-            count
-        };
+        // plan_version is the number of goals already set for this plan.
+        // Read a per-plan counter directly — O(1), no global scan.
+        let plan_version: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PlanGoalCount(plan_id))
+            .unwrap_or(0u64);
 
         let goal = MeasurableGoal {
             goal_id,
@@ -959,6 +946,9 @@ impl RehabilitationServicesContract {
         env.storage()
             .instance()
             .set(&DataKey::GoalCounter, &goal_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::PlanGoalCount(plan_id), &(plan_version + 1));
 
         env.events().publish(
             (Symbol::new(&env, "goal_set"), plan_id),
@@ -1071,7 +1061,7 @@ impl RehabilitationServicesContract {
         page: u32,
         page_size: u32,
     ) -> TherapyPage {
-        let page_size = page_size.min(MAX_PAGE_SIZE).max(1);
+        let page_size = page_size.clamp(1, MAX_PAGE_SIZE);
         let all: Vec<TherapySession> = env
             .storage()
             .instance()
@@ -1085,7 +1075,10 @@ impl RehabilitationServicesContract {
             items.push_back(all.get(i).unwrap());
             i += 1;
         }
-        TherapyPage { items, has_more: (start + page_size) < total }
+        TherapyPage {
+            items,
+            has_more: (start + page_size) < total,
+        }
     }
 
     /// Paginated progress notes for a treatment plan.
@@ -1097,7 +1090,7 @@ impl RehabilitationServicesContract {
         page: u32,
         page_size: u32,
     ) -> NotePage {
-        let page_size = page_size.min(MAX_PAGE_SIZE).max(1);
+        let page_size = page_size.clamp(1, MAX_PAGE_SIZE);
         let all: Vec<ProgressNote> = env
             .storage()
             .instance()
@@ -1111,7 +1104,10 @@ impl RehabilitationServicesContract {
             items.push_back(all.get(i).unwrap());
             i += 1;
         }
-        NotePage { items, has_more: (start + page_size) < total }
+        NotePage {
+            items,
+            has_more: (start + page_size) < total,
+        }
     }
 }
 
