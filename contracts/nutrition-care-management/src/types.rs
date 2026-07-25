@@ -22,6 +22,7 @@ pub enum Error {
     ProviderNotAuthorized = 12,
     CarePlanContractNotConfigured = 13,
     OutcomeNotLinked = 14,
+    DietContraindicatedWithMedication = 15,
 }
 
 // -----------------------------------------------------------------------
@@ -289,6 +290,12 @@ pub enum DataKey {
     OutcomeCarePlanLink(u64),
     /// global care-plan contract address (#566)
     CarePlanContractAddress,
+    /// global prescription-management contract address (#562)
+    PrescriptionContractAddress,
+    /// diet_type → Vec<String> (contraindicated medications) (#562)
+    ContraindicationList(Symbol),
+    /// admin address authorized to manage contraindication lists (#562)
+    ContraindicationAdmin,
 }
 
 /// Paginated outcome history result (#566).

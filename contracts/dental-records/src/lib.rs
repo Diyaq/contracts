@@ -237,6 +237,17 @@ impl DentalRecordsContract {
             .persistent()
             .get(&DataKey::Appt(appointment_id))
             .ok_or(Error::NotFound)?;
+
+        // #600 – ensure the caller is actually the dentist assigned to this treatment plan
+        let plan: TreatmentPlan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Plan(appt.treatment_plan_id))
+            .ok_or(Error::NotFound)?;
+        if dentist_id != plan.dentist_id {
+            return Err(Error::Unauthorized);
+        }
+
         appt.is_completed = true;
         env.storage()
             .persistent()
