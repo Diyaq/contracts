@@ -77,6 +77,15 @@ pub struct CarePathway {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Reminder {
+    pub reminder_id: u64,
+    pub patient_id: Address,
+    pub due_date: u64,
+    pub created_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GuidelineMetadata {
     pub condition: String,
     pub criteria_hash: BytesN<32>,
@@ -89,6 +98,8 @@ pub struct GuidelineMetadata {
 pub enum DataKey {
     Admin,
     Guideline(String),
+    ReminderCounter(Address),       // patient_id -> u64 (next reminder_id)
+    Reminder(Address, u64),         // (patient_id, reminder_id) -> Reminder
 }
 
 #[contract]
@@ -210,21 +221,47 @@ impl ClinicalGuidelineContract {
         _patient_id: Address,
         medication: String,
         weight_dg: u32, // Decigrams (0.1g) to avoid f32
-        _age: u32,
         renal_function: Option<u32>,
     ) -> Result<DosageRecommendation, Error> {
-        let is_renal_impaired = renal_function.unwrap_or(100) < 60;
+        let gfr = renal_function.unwrap_or(100);
+        let is_renal_impaired = gfr < 60;
 
         // Example: 5mg per kg (1000g = 10000dg)
         // dosage = (weight_dg / 10000) * 5
-        let dose_mg = (weight_dg as u64 * 5) / 10000;
+        let mut dose_mg = (weight_dg as u64 * 5) / 10000;
+
+        // Reduce dose by 25% for renal impairment (GFR < 60)
+        if is_renal_impaired {
+            dose_mg = (dose_mg * 75) / 100;
+        }
+
+        // Build dose string: "XXmg" (simple numeric representation)
+        let dose_str = match dose_mg {
+            0 => String::from_str(&env, "0mg"),
+            1..=9 => {
+                let s = match dose_mg {
+                    1 => "1mg",
+                    2 => "2mg",
+                    3 => "3mg",
+                    4 => "4mg",
+                    5 => "5mg",
+                    6 => "6mg",
+                    7 => "7mg",
+                    8 => "8mg",
+                    9 => "9mg",
+                    _ => "0mg",
+                };
+                String::from_str(&env, s)
+            }
+            _ => String::from_str(&env, "10+mg"),
+        };
 
         Ok(DosageRecommendation {
             medication,
-            recommended_dose: String::from_str(&env, "Dosage calculated based on weight"),
+            recommended_dose: dose_str,
             frequency: String::from_str(&env, "TID"),
             route: Symbol::new(&env, "Oral"),
-            duration: Some(dose_mg), // Simplified
+            duration: Some(604800), // 7 days in seconds
             renal_adjustment: is_renal_impaired,
             monitoring_required: Vec::new(&env),
         })
@@ -264,14 +301,46 @@ impl ClinicalGuidelineContract {
     pub fn create_reminder(
         env: Env,
         patient_id: Address,
-        _provider_id: Address,
+        provider_id: Address,
         _reminder_type: Symbol,
         due_date: u64,
         _priority: Symbol,
     ) -> Result<u64, Error> {
-        let reminder_id = env.ledger().timestamp();
-        env.storage().temporary().set(&patient_id, &due_date);
+        provider_id.require_auth();
+
+        let counter_key = DataKey::ReminderCounter(patient_id.clone());
+        let reminder_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&counter_key)
+            .unwrap_or(1);
+
+        let reminder = Reminder {
+            reminder_id,
+            patient_id: patient_id.clone(),
+            due_date,
+            created_at: env.ledger().timestamp(),
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Reminder(patient_id.clone(), reminder_id), &reminder);
+        env.storage()
+            .persistent()
+            .set(&counter_key, &(reminder_id + 1));
+
         Ok(reminder_id)
+    }
+
+    pub fn get_reminder(
+        env: Env,
+        patient_id: Address,
+        reminder_id: u64,
+    ) -> Result<Reminder, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Reminder(patient_id, reminder_id))
+            .ok_or(Error::GuidelineNotFound)
     }
 
     pub fn check_preventive_care(
