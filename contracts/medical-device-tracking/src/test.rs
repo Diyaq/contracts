@@ -707,3 +707,40 @@ fn test_regulator_emergency_recall_records_scope() {
         Some(String::from_str(&env, "national-device-hold"))
     );
 }
+
+#[test]
+fn test_track_device_performance_patient_mismatch() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = setup_client(&env);
+
+    let patient_a = Address::generate(&env);
+    let patient_b = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    let manufacturer = Address::generate(&env);
+
+    let device_id = register_device_helper(&env, &client, &manufacturer);
+
+    // Implant device for patient_a
+    let implant_id = client.implant_device(
+        &patient_a,
+        &device_id,
+        &provider_id,
+        &1700000000u64,
+        &String::from_str(&env, "Left Hip"),
+        &dummy_hash(&env),
+    );
+
+    // Patient B attempts to file performance report for Patient A's implant
+    let result = client.try_track_device_performance(
+        &implant_id,
+        &patient_b,
+        &dummy_hash(&env),
+        &1700086400u64,
+        &None,
+    );
+
+    // Should fail with NotAuthorized error
+    assert!(result.is_err());
+}

@@ -474,12 +474,15 @@ impl MedicalDeviceRegistry {
     ) -> Result<(), Error> {
         patient_id.require_auth();
 
-        if !env
+        let implant_record: ImplantRecord = env
             .storage()
             .persistent()
-            .has(&DataKey::ImplantRecord(implant_record_id))
-        {
-            return Err(Error::RecordNotFound);
+            .get(&DataKey::ImplantRecord(implant_record_id))
+            .ok_or(Error::RecordNotFound)?;
+
+        // Verify patient owns this implant record
+        if implant_record.patient_id != patient_id {
+            return Err(Error::NotAuthorized);
         }
 
         let report = PerformanceReport {
