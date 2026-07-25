@@ -833,12 +833,8 @@ fn test_record_progress_achieves_goal() {
     let client = RehabilitationServicesContractClient::new(&env, &contract_id);
 
     let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
-    let goal_id = client.set_rehabilitation_goal(
-        &plan_id,
-        &Symbol::new(&env, "pain_scale"),
-        &3u32,
-        &2000u64,
-    );
+    let goal_id =
+        client.set_rehabilitation_goal(&plan_id, &Symbol::new(&env, "pain_scale"), &3u32, &2000u64);
 
     // Pain scale — lower is better but we track as "has reached target"
     client.record_progress(&plan_id, &goal_id, &5u32, &1400u64);
@@ -861,12 +857,8 @@ fn test_goal_progress_time_series_queryable() {
     let client = RehabilitationServicesContractClient::new(&env, &contract_id);
 
     let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
-    let goal_id = client.set_rehabilitation_goal(
-        &plan_id,
-        &Symbol::new(&env, "fim"),
-        &100u32,
-        &3000u64,
-    );
+    let goal_id =
+        client.set_rehabilitation_goal(&plan_id, &Symbol::new(&env, "fim"), &100u32, &3000u64);
 
     for i in 0..5u32 {
         client.record_progress(&plan_id, &goal_id, &(50 + i * 10), &(1000 + i as u64 * 100));
@@ -1028,4 +1020,41 @@ fn test_get_progress_notes_paged() {
     let page2 = client.get_progress_notes_paged(&plan_id, &1u32, &3u32);
     assert_eq!(page2.items.len(), 1);
     assert!(!page2.has_more);
+}
+
+#[test]
+fn test_plan_version_is_per_plan_not_global() {
+    // Goals created on plan_b must not inflate plan_version on plan_a.
+    let env = Env::default();
+    env.mock_all_auths();
+    let patient = Address::generate(&env);
+    let therapist = Address::generate(&env);
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+
+    let (_, plan_a) = create_plan(&env, &client, &patient, &therapist);
+    let (_, plan_b) = create_plan(&env, &client, &patient, &therapist);
+
+    // Add several goals to plan_b first.
+    for _ in 0..5 {
+        client.set_rehabilitation_goal(&plan_b, &Symbol::new(&env, "strength"), &100u32, &9000u64);
+    }
+
+    // First goal on plan_a should have plan_version == 0 regardless of plan_b's goals.
+    let g1 = client.set_rehabilitation_goal(
+        &plan_a,
+        &Symbol::new(&env, "range_of_motion"),
+        &120u32,
+        &9000u64,
+    );
+    assert_eq!(client.get_measurable_goal(&g1).plan_version, 0);
+
+    // Second goal on plan_a should have plan_version == 1.
+    let g2 = client.set_rehabilitation_goal(
+        &plan_a,
+        &Symbol::new(&env, "range_of_motion"),
+        &130u32,
+        &9001u64,
+    );
+    assert_eq!(client.get_measurable_goal(&g2).plan_version, 1);
 }
