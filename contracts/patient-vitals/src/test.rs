@@ -341,7 +341,97 @@ fn test_alert_after_cooldown_expires() {
     assert_eq!(alerts.get(1).unwrap().alert_time, t1);
 }
 
-// ── deregister_patient tests ──────────────────────────────────────────────────
+// ── #638 regression: deregister purges all window buckets ────────────────────
+
+/// Record vitals spanning multiple raw windows and agg windows, deregister,
+/// then verify that get_raw_window_page and get_aggregate_page return empty
+/// for all previously-written indices.
+#[test]
+fn test_deregister_purges_raw_and_agg_windows() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let recorder = Address::generate(&env);
+
+    let vitals = VitalSigns {
+        blood_pressure_systolic: Some(120),
+        blood_pressure_diastolic: Some(80),
+        heart_rate: Some(72),
+        temperature: None,
+        respiratory_rate: None,
+        oxygen_saturation: Some(98),
+        blood_glucose: None,
+        weight: None,
+    };
+
+    // RAW_WINDOW_SECONDS = 3600 (1 h), AGG_WINDOW_SECONDS = 86400 (24 h).
+    // Write into two distinct raw windows: t=0 (raw_idx=0) and t=7200 (raw_idx=2).
+    let t0: u64 = 0;
+    let t1: u64 = 7_200;   // 2 h later → different raw window
+    // Write into two distinct agg windows: t=0 (agg_idx=0) and t=90000 (agg_idx=1).
+    let t2: u64 = 90_000;  // ~25 h → second agg window
+
+    client.record_vital_signs(&patient_id, &recorder, &t0, &vitals);
+    client.record_vital_signs(&patient_id, &recorder, &t1, &vitals);
+    client.record_vital_signs(&patient_id, &recorder, &t2, &vitals);
+
+    // Verify data is present before deregistration.
+    let raw0 = client.get_raw_window_page(&patient_id, &0u64, &0u32);
+    assert!(!raw0.readings.is_empty(), "raw window 0 should have readings before deregister");
+    let raw2 = client.get_raw_window_page(&patient_id, &2u64, &0u32);
+    assert!(!raw2.readings.is_empty(), "raw window 2 should have readings before deregister");
+    let agg0 = client.get_aggregate_page(&patient_id, &0u64, &0u64, &0u32);
+    assert!(!agg0.aggregates.is_empty(), "agg window 0 should have an entry before deregister");
+    let agg1 = client.get_aggregate_page(&patient_id, &1u64, &1u64, &0u32);
+    assert!(!agg1.aggregates.is_empty(), "agg window 1 should have an entry before deregister");
+
+    // Deregister.
+    client.deregister_patient(&patient_id);
+
+    // All raw windows must now be empty.
+    let raw0_after = client.get_raw_window_page(&patient_id, &0u64, &0u32);
+    assert!(
+        raw0_after.readings.is_empty(),
+        "raw window 0 must be empty after deregister"
+    );
+    let raw2_after = client.get_raw_window_page(&patient_id, &2u64, &0u32);
+    assert!(
+        raw2_after.readings.is_empty(),
+        "raw window 2 must be empty after deregister"
+    );
+
+    // All agg windows must now be empty.
+    let agg0_after = client.get_aggregate_page(&patient_id, &0u64, &0u64, &0u32);
+    assert!(
+        agg0_after.aggregates.is_empty(),
+        "agg window 0 must be empty after deregister"
+    );
+    let agg1_after = client.get_aggregate_page(&patient_id, &1u64, &1u64, &0u32);
+    assert!(
+        agg1_after.aggregates.is_empty(),
+        "agg window 1 must be empty after deregister"
+    );
+}
+
+/// Deregistering a patient that has never recorded any vitals must succeed
+/// without panicking (no PatientWindows entry to remove).
+#[test]
+fn test_deregister_patient_with_no_vitals() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, PatientVitalsContract);
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    // Should not panic even though no data was recorded.
+    client.deregister_patient(&patient_id);
+}
+
 
 #[test]
 fn test_deregister_patient_clears_vitals_history() {

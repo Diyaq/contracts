@@ -1,0 +1,139 @@
+name: Extend Contract TTLs
+
+on:
+  # Weekly: every Monday at 06:00 UTC.
+  schedule:
+    - cron: "0 6 * * 1"
+  # Manual trigger for ad-hoc extension.
+  workflow_dispatch:
+    inputs:
+      network:
+        description: "Network to extend TTLs on (testnet or mainnet)"
+        required: false
+        default: "mainnet"
+        type: choice
+        options:
+          - mainnet
+          - testnet
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # ttl-monitoring: Gate — fail hard if the manifest is absent or incomplete.
+  # This guards against silently skipping TTL extension when contracts are
+  # live but the manifest was never committed.
+  # ──────────────────────────────────────────────────────────────────────────
+  ttl-monitoring:
+    name: Verify deployment manifest
+    runs-on: ubuntu-latest
+    outputs:
+      network: ${{ steps.pick-network.outputs.network }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve target network
+        id: pick-network
+        run: |
+          NETWORK="${{ github.event.inputs.network }}"
+          # Default to mainnet for the scheduled run.
+          if [ -z "$NETWORK" ]; then
+            NETWORK="mainnet"
+          fi
+          echo "network=${NETWORK}" >> "$GITHUB_OUTPUT"
+          echo "Target network: ${NETWORK}"
+
+      - name: Check manifest exists and is complete
+        id: check-manifest
+        run: |
+          NETWORK="${{ steps.pick-network.outputs.network }}"
+          MANIFEST="deployments/${NETWORK}.json"
+
+          # The manifest file MUST exist — exit 1 if missing.
+          if [ ! -f "$MANIFEST" ]; then
+            echo "::error::Deployment manifest '${MANIFEST}' not found."
+            echo "  Create it by running: ./scripts/deploy_all.sh --network ${NETWORK}"
+            echo "  If contracts are not yet deployed, update MAINNET_READINESS.md to"
+            echo "  reflect that, and disable this workflow until deployment is complete."
+            exit 1
+          fi
+
+          # The manifest MUST have _status == "complete".
+          STATUS=$(python3 -c "import json, sys; d=json.load(open('$MANIFEST')); print(d.get('_status',''))")
+          if [ "$STATUS" != "complete" ]; then
+            echo "::error::Manifest '${MANIFEST}' exists but _status='${STATUS}' (expected 'complete')."
+            echo "  Either the deployment did not finish, or contracts are not yet deployed."
+            echo "  Check MAINNET_READINESS.md for the current deployment state."
+            exit 1
+          fi
+
+          echo "Manifest '${MANIFEST}' is present and complete."
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # extend-ttls: Enumerate deployed contracts from the manifest and bump TTLs.
+  # Only runs when ttl-monitoring passes (manifest verified complete).
+  # ──────────────────────────────────────────────────────────────────────────
+  extend-ttls:
+    name: Extend TTLs on ${{ needs.ttl-monitoring.outputs.network }}
+    runs-on: ubuntu-latest
+    needs: ttl-monitoring
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Stellar CLI
+        run: |
+          cargo install --locked stellar-cli || echo "stellar-cli already installed"
+
+      - name: Configure identity
+        env:
+          STELLAR_SECRET_KEY: ${{ secrets.STELLAR_SECRET_KEY }}
+        run: |
+          if [ -z "$STELLAR_SECRET_KEY" ]; then
+            echo "::error::STELLAR_SECRET_KEY secret is not configured."
+            exit 1
+          fi
+          stellar keys add extender --secret-key "$STELLAR_SECRET_KEY"
+
+      - name: Extend TTLs for all deployed contracts
+        env:
+          NETWORK: ${{ needs.ttl-monitoring.outputs.network }}
+        run: |
+          MANIFEST="deployments/${NETWORK}.json"
+
+          # Extract contract IDs — skip metadata keys that start with "_".
+          CONTRACT_IDS=$(python3 - <<'EOF'
+          import json, sys
+          with open("${MANIFEST}") as f:
+              d = json.load(f)
+          ids = [v for k, v in d.items() if not k.startswith("_") and v]
+          print("\n".join(ids))
+          EOF
+          )
+
+          if [ -z "$CONTRACT_IDS" ]; then
+            echo "No contract IDs found in manifest — nothing to extend."
+            exit 0
+          fi
+
+          FAILED=0
+          while IFS= read -r contract_id; do
+            echo "Extending TTL for contract: ${contract_id}"
+            stellar contract extend-ttl \
+              --id "$contract_id" \
+              --source extender \
+              --network "$NETWORK" \
+              --ledgers-to-expire 2000000 || {
+              echo "::warning::Failed to extend TTL for ${contract_id}"
+              FAILED=$((FAILED + 1))
+            }
+          done <<< "$CONTRACT_IDS"
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::${FAILED} contract(s) failed to have their TTL extended."
+            exit 1
+          fi
+
+          echo "All contract TTLs extended successfully."
