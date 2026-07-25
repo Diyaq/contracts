@@ -140,7 +140,7 @@ jobs:
 
       - name: Install soroban-cli
         run: |
-          cargo install --locked soroban-cli --features opt || echo "soroban-cli already installed"
+          cargo install --locked soroban-cli
 
       - name: Build WASM binaries
         run: |
