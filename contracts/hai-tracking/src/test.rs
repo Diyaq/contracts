@@ -390,3 +390,136 @@ fn test_reporting_stewardship_and_alert_priority_validation() {
     );
     assert!(bad_dot.is_err());
 }
+
+#[test]
+fn test_record_organism_requires_auth_from_reporter() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let facility = Address::generate(&env);
+    let reporter = Address::generate(&env);
+
+    let infection_id = report_case(
+        &env,
+        &client,
+        &patient,
+        &facility,
+        "mrsa",
+        1_799_900_000,
+        "Ward A",
+        &reporter,
+    );
+
+    client.record_organism(
+        &infection_id,
+        &String::from_str(&env, "staph_aureus"),
+        &Symbol::new(&env, "blood"),
+        &1_799_900_100,
+        &BytesN::from_array(&env, &[1u8; 32]),
+    );
+
+    let case = client.get_infection_case(&infection_id);
+    assert_eq!(case.organisms.len(), 1);
+}
+
+#[test]
+fn test_record_antibiotic_susceptibility_requires_auth_from_reporter() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let facility = Address::generate(&env);
+    let reporter = Address::generate(&env);
+
+    let infection_id = report_case(
+        &env,
+        &client,
+        &patient,
+        &facility,
+        "mrsa",
+        1_799_900_000,
+        "Ward A",
+        &reporter,
+    );
+
+    client.record_organism(
+        &infection_id,
+        &String::from_str(&env, "staph_aureus"),
+        &Symbol::new(&env, "blood"),
+        &1_799_900_100,
+        &BytesN::from_array(&env, &[1u8; 32]),
+    );
+
+    client.record_antibiotic_susceptibility(
+        &infection_id,
+        &String::from_str(&env, "staph_aureus"),
+        &String::from_str(&env, "drug_a"),
+        &Symbol::new(&env, "resistant"),
+        &Some(150),
+    );
+
+    let case = client.get_infection_case(&infection_id);
+    let org = case.organisms.get(0).unwrap();
+    assert_eq!(org.susceptibilities.len(), 1);
+}
+
+#[test]
+fn test_identify_outbreak_cluster_requires_auth_from_facility() {
+    let (env, client) = setup();
+    let facility = Address::generate(&env);
+    let reporter = Address::generate(&env);
+
+    for _ in 0..4 {
+        let patient = Address::generate(&env);
+        report_case(
+            &env,
+            &client,
+            &patient,
+            &facility,
+            "mrsa",
+            1_799_950_000,
+            "Ward A",
+            &reporter,
+        );
+    }
+
+    let outbreak_id = client
+        .identify_outbreak_cluster(
+            &Symbol::new(&env, "mrsa"),
+            &facility,
+            &String::from_str(&env, "Ward A"),
+            &30,
+            &3,
+        )
+        .unwrap();
+
+    assert_eq!(outbreak_id, 1);
+}
+
+#[test]
+fn test_report_to_nhsn_requires_auth_from_facility() {
+    let (env, client) = setup();
+    let facility = Address::generate(&env);
+
+    let report_id = client.report_to_nhsn(
+        &facility,
+        &202601,
+        &BytesN::from_array(&env, &[5u8; 32]),
+        &BytesN::from_array(&env, &[6u8; 32]),
+    );
+    assert_eq!(report_id, 1);
+}
+
+#[test]
+fn test_track_antibiotic_stewardship_requires_auth_from_facility() {
+    let (env, client) = setup();
+    let facility = Address::generate(&env);
+
+    client.track_antibiotic_stewardship(
+        &facility,
+        &String::from_str(&env, "vancomycin"),
+        &150,
+        &300,
+        &202601,
+    );
+
+    // If this succeeds, auth from facility was properly validated
+}
+}

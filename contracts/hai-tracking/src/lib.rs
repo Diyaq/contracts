@@ -246,6 +246,7 @@ impl HAITrackingContract {
         culture_result_hash: BytesN<32>,
     ) -> Result<(), Error> {
         let mut case = Self::get_infection_case_internal(&env, infection_id)?;
+        case.reported_by.require_auth();
 
         let organism = Organism {
             name: organism_name,
@@ -272,11 +273,11 @@ impl HAITrackingContract {
         susceptibility: Symbol,
         mic_value_x100: Option<i64>,
     ) -> Result<(), Error> {
+        let mut case = Self::get_infection_case_internal(&env, infection_id)?;
+        case.reported_by.require_auth();
         if !Self::is_valid_susceptibility(&env, &susceptibility) {
             return Err(Error::InvalidSusceptibility);
         }
-
-        let mut case = Self::get_infection_case_internal(&env, infection_id)?;
         let mut idx = 0u32;
         let mut found = false;
         while idx < case.organisms.len() {
@@ -326,6 +327,7 @@ impl HAITrackingContract {
         time_window_days: u32,
         case_threshold: u32,
     ) -> Result<Option<u64>, Error> {
+        facility_id.require_auth();
         if !Self::is_valid_infection_type(&env, &infection_type) || case_threshold == 0 {
             return Err(Error::InvalidData);
         }
@@ -530,6 +532,7 @@ impl HAITrackingContract {
         infection_data_hash: BytesN<32>,
         device_utilization_hash: BytesN<32>,
     ) -> Result<u64, Error> {
+        facility_id.require_auth();
         let report_id = Self::next_id(&env, symbol_short!("nhsn_ctr"));
         let report = NhsnReport {
             report_id,
@@ -554,6 +557,7 @@ impl HAITrackingContract {
         patient_days: u32,
         reporting_period: u64,
     ) -> Result<(), Error> {
+        facility_id.require_auth();
         if patient_days == 0 {
             return Err(Error::DivisionByZero);
         }
