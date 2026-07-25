@@ -592,4 +592,103 @@ fn test_discontinue_isolation_precaution_already_discontinued() {
 
     assert!(res.is_err());
 }
+
+#[test]
+fn test_calculate_infection_rate_with_device_days() {
+    let (env, client) = setup();
+    let facility = Address::generate(&env);
+    let reporter = Address::generate(&env);
+
+    let patient = Address::generate(&env);
+    let infection_id = client.report_infection(
+        &patient,
+        &facility,
+        &Symbol::new(&env, "clabsi"),
+        &1_799_900_000,
+        &String::from_str(&env, "ICU"),
+        &true,
+        &Some(10),
+        &reporter,
+    );
+
+    let rate = client.calculate_infection_rate(
+        &facility,
+        &Symbol::new(&env, "clabsi"),
+        &1_799_900_000,
+        &1_799_900_100,
+        &None,
+    );
+
+    assert!(rate.is_ok());
+    let rate = rate.unwrap();
+    assert_eq!(rate.numerator, 1);
+    assert_eq!(rate.denominator, 10);
+}
+
+#[test]
+fn test_calculate_infection_rate_with_patient_days() {
+    let (env, client) = setup();
+    let facility = Address::generate(&env);
+    let reporter = Address::generate(&env);
+
+    let patient = Address::generate(&env);
+    let infection_id = client.report_infection(
+        &patient,
+        &facility,
+        &Symbol::new(&env, "cauti"),
+        &1_799_900_000,
+        &String::from_str(&env, "Ward A"),
+        &false,
+        &None,
+        &reporter,
+    );
+
+    client.record_patient_days(
+        &infection_id,
+        &50,
+        &reporter,
+    );
+
+    let rate = client.calculate_infection_rate(
+        &facility,
+        &Symbol::new(&env, "cauti"),
+        &1_799_900_000,
+        &1_799_900_100,
+        &None,
+    );
+
+    assert!(rate.is_ok());
+    let rate = rate.unwrap();
+    assert_eq!(rate.numerator, 1);
+    assert_eq!(rate.denominator, 50);
+}
+
+#[test]
+fn test_calculate_infection_rate_no_denominator_fails() {
+    let (env, client) = setup();
+    let facility = Address::generate(&env);
+    let reporter = Address::generate(&env);
+
+    let patient = Address::generate(&env);
+    client.report_infection(
+        &patient,
+        &facility,
+        &Symbol::new(&env, "cauti"),
+        &1_799_900_000,
+        &String::from_str(&env, "Ward A"),
+        &false,
+        &None,
+        &reporter,
+    );
+
+    let rate = client.try_calculate_infection_rate(
+        &facility,
+        &Symbol::new(&env, "cauti"),
+        &1_799_900_000,
+        &1_799_900_100,
+        &None,
+    );
+
+    assert!(rate.is_err());
+}
 }

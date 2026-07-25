@@ -75,6 +75,7 @@ pub struct InfectionCase {
     pub organisms: Vec<Organism>,
     pub device_associated: bool,
     pub device_days: Option<u32>,
+    pub patient_days: Option<u32>,
     pub reported_by: Address,
     pub outbreak_related: bool,
     pub resolved: bool,
@@ -224,6 +225,7 @@ impl HAITrackingContract {
             organisms: Vec::new(&env),
             device_associated,
             device_days,
+            patient_days: None,
             reported_by,
             outbreak_related: false,
             resolved: false,
@@ -465,6 +467,28 @@ impl HAITrackingContract {
         Ok(())
     }
 
+    pub fn record_patient_days(
+        env: Env,
+        infection_id: u64,
+        patient_days: u32,
+        recorded_by: Address,
+    ) -> Result<(), Error> {
+        recorded_by.require_auth();
+
+        let mut case = Self::get_infection_case_internal(&env, infection_id)?;
+
+        if patient_days == 0 {
+            return Err(Error::InvalidData);
+        }
+
+        case.patient_days = Some(patient_days);
+        env.storage()
+            .persistent()
+            .set(&DataKey::InfectionCase(infection_id), &case);
+
+        Ok(())
+    }
+
     pub fn track_hand_hygiene_compliance(
         env: Env,
         facility_id: Address,
@@ -516,6 +540,7 @@ impl HAITrackingContract {
 
         let infection_ids = Self::get_ids(&env, DataKey::InfectionIds);
         let mut numerator = 0u32;
+        let mut denominator = 0u32;
 
         let mut i = 0u32;
         while i < infection_ids.len() {
@@ -533,14 +558,19 @@ impl HAITrackingContract {
                         && unit_match
                     {
                         numerator += 1;
+                        if case.device_associated {
+                            if let Some(dd) = case.device_days {
+                                denominator = denominator.saturating_add(dd);
+                            }
+                        } else if let Some(pd) = case.patient_days {
+                            denominator = denominator.saturating_add(pd);
+                        }
                     }
                 }
             }
             i += 1;
         }
 
-        // Placeholder denominator until patient/device day feeds are integrated.
-        let denominator = 1000u32;
         if denominator == 0 {
             return Err(Error::DivisionByZero);
         }
@@ -732,12 +762,35 @@ impl HAITrackingContract {
         }
 
         // Rate per 1000 patient-days x100 over the window.
-        // Denominator: window_days * 1000 (placeholder patient-days).
-        let denominator = u64::from(config.window_days) * 1000;
+        // Denominator: sum of device_days or patient_days from infections in window.
+        let mut denominator = 0u32;
+        let mut j = 0u32;
+        while j < infection_ids.len() {
+            if let Some(case_id) = infection_ids.get(j) {
+                if let Ok(case) = Self::get_infection_case_internal(&env, case_id) {
+                    if case.facility_id == facility_id
+                        && case.location == ward_id
+                        && case.infection_type == infection_type
+                        && case.onset_date >= window_start
+                        && case.onset_date <= now
+                    {
+                        if case.device_associated {
+                            if let Some(dd) = case.device_days {
+                                denominator = denominator.saturating_add(dd);
+                            }
+                        } else if let Some(pd) = case.patient_days {
+                            denominator = denominator.saturating_add(pd);
+                        }
+                    }
+                }
+            }
+            j += 1;
+        }
+
         let current_rate_x100 = if denominator == 0 {
             0i64
         } else {
-            (i64::from(case_count) * 1000 * 100) / denominator as i64
+            (i64::from(case_count) * 1000 * 100) / i64::from(denominator)
         };
 
         let threshold = (config.baseline_rate_x100
