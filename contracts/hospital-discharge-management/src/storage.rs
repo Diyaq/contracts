@@ -1,5 +1,5 @@
 use shared_contracts::safe_increment;
-use soroban_sdk::{Env, Symbol};
+use soroban_sdk::{Address, Env, Symbol};
 
 use crate::types::*;
 
@@ -103,4 +103,16 @@ pub fn save_discharge_completion(env: &Env, plan_id: u64, completion: &Discharge
 // Readmission Risk storage
 pub fn save_readmission_risk(env: &Env, plan_id: u64, risk: &ReadmissionRisk) {
     env.storage().persistent().set(&(RISK, plan_id), risk);
+}
+
+// Hospital Registry storage
+pub fn set_hospital_registry(env: &Env, registry: &Address) {
+    env.storage().instance().set(&DataKey::HospitalRegistry, registry);
+}
+
+pub fn get_hospital_registry(env: &Env) -> Result<Address, Error> {
+    env.storage()
+        .instance()
+        .get(&DataKey::HospitalRegistry)
+        .ok_or(Error::Unauthorized)
 }
