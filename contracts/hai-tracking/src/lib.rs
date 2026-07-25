@@ -434,6 +434,37 @@ impl HAITrackingContract {
         Ok(precaution_id)
     }
 
+    pub fn discontinue_isolation_precaution(
+        env: Env,
+        precaution_id: u64,
+        discontinued_by: Address,
+        reason: String,
+    ) -> Result<(), Error> {
+        discontinued_by.require_auth();
+
+        let mut precaution: IsolationPrecaution = env
+            .storage()
+            .persistent()
+            .get(&DataKey::IsolationPrecaution(precaution_id))
+            .ok_or(Error::NotFound)?;
+
+        if !precaution.active {
+            return Err(Error::InvalidData);
+        }
+
+        precaution.active = false;
+        env.storage()
+            .persistent()
+            .set(&DataKey::IsolationPrecaution(precaution_id), &precaution);
+
+        env.events().publish(
+            (Symbol::new(&env, "precaution_discontinued"), precaution_id),
+            (discontinued_by, reason, precaution.patient_id),
+        );
+
+        Ok(())
+    }
+
     pub fn track_hand_hygiene_compliance(
         env: Env,
         facility_id: Address,

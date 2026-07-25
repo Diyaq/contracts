@@ -522,4 +522,74 @@ fn test_track_antibiotic_stewardship_requires_auth_from_facility() {
 
     // If this succeeds, auth from facility was properly validated
 }
+
+#[test]
+fn test_discontinue_isolation_precaution_success() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let discontinued_by = Address::generate(&env);
+
+    let precaution_id = client.track_isolation_precaution(
+        &patient,
+        &Symbol::new(&env, "contact"),
+        &1_799_990_000,
+        &String::from_str(&env, "MRSA colonization"),
+        &String::from_str(&env, "3 negative cultures"),
+    );
+
+    let active_before = client.get_active_isolations(&patient);
+    assert_eq!(active_before.len(), 1);
+
+    client.discontinue_isolation_precaution(
+        &precaution_id,
+        &discontinued_by,
+        &String::from_str(&env, "3 negative cultures obtained"),
+    );
+
+    let active_after = client.get_active_isolations(&patient);
+    assert_eq!(active_after.len(), 0);
+}
+
+#[test]
+fn test_discontinue_isolation_precaution_not_found() {
+    let (env, client) = setup();
+    let discontinued_by = Address::generate(&env);
+
+    let res = client.try_discontinue_isolation_precaution(
+        &999,
+        &discontinued_by,
+        &String::from_str(&env, "reason"),
+    );
+
+    assert!(res.is_err());
+}
+
+#[test]
+fn test_discontinue_isolation_precaution_already_discontinued() {
+    let (env, client) = setup();
+    let patient = Address::generate(&env);
+    let discontinued_by = Address::generate(&env);
+
+    let precaution_id = client.track_isolation_precaution(
+        &patient,
+        &Symbol::new(&env, "contact"),
+        &1_799_990_000,
+        &String::from_str(&env, "MRSA colonization"),
+        &String::from_str(&env, "3 negative cultures"),
+    );
+
+    client.discontinue_isolation_precaution(
+        &precaution_id,
+        &discontinued_by,
+        &String::from_str(&env, "first discontinuation"),
+    );
+
+    let res = client.try_discontinue_isolation_precaution(
+        &precaution_id,
+        &discontinued_by,
+        &String::from_str(&env, "second discontinuation"),
+    );
+
+    assert!(res.is_err());
+}
 }
