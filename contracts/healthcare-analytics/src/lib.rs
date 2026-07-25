@@ -548,7 +548,7 @@ impl HealthcareAnalytics {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::Unauthorized)?;
-        if admin != stored_admin {
+        if admin != stored {
             return Err(Error::Unauthorized);
         }
         if env.storage().instance().has(&DataKey::PendingAdmin) {

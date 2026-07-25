@@ -909,3 +909,54 @@ fn test_cancel_report_executing() {
     let err_executing = client.try_cancel_report(&requester, &job_id);
     assert_eq!(err_executing, Err(Ok(Error::JobAlreadyExecuting)));
 }
+
+// ========================
+// Admin rotation tests
+// ========================
+
+#[test]
+fn test_propose_admin_rotation_rejects_non_admin() {
+    let (env, client, _admin) = setup_with_admin();
+
+    // A random address that was never set as admin.
+    let impostor = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let result = client.try_propose_admin_rotation(&impostor, &new_admin);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_propose_admin_rotation_succeeds_for_admin() {
+    let (env, client, admin) = setup_with_admin();
+    let new_admin = Address::generate(&env);
+
+    // Current admin should be able to propose a rotation without error.
+    client.propose_admin_rotation(&admin, &new_admin);
+}
+
+#[test]
+fn test_propose_admin_rotation_rejects_duplicate_pending() {
+    let (env, client, admin) = setup_with_admin();
+    let new_admin_a = Address::generate(&env);
+    let new_admin_b = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &new_admin_a);
+
+    // A second proposal before the first is accepted or expires must fail.
+    let result = client.try_propose_admin_rotation(&admin, &new_admin_b);
+    assert_eq!(result, Err(Ok(Error::RotationPending)));
+}
+
+#[test]
+fn test_accept_admin_rotation_rejects_wrong_pending_admin() {
+    let (env, client, admin) = setup_with_admin();
+    let new_admin = Address::generate(&env);
+    let other = Address::generate(&env);
+
+    client.propose_admin_rotation(&admin, &new_admin);
+
+    // An address that is not the pending admin cannot accept.
+    let result = client.try_accept_admin_rotation(&other);
+    assert_eq!(result, Err(Ok(Error::NotPendingAdmin)));
+}
