@@ -433,6 +433,38 @@ on:
 
 ---
 
+## Branch Protection
+
+Branch protection must be enabled on `main` so CI failures block merges. Configure it under **Settings → Branches → Add branch protection rule** for the pattern `main`.
+
+### Required Status Checks
+
+These checks must pass before any PR can be merged:
+
+| Check Name | Workflow | Job |
+|---|---|---|
+| `CI / ci-success` | `ci.yml` | Gate job — passes only when all of Format, Clippy, Test, and Build WASM succeed |
+| `CI / WASM Size Check` | `wasm-size-check.yml` | Fails if any WASM binary exceeds the size budget |
+
+The `CI / ci-success` job is the primary gate. It is defined in `ci.yml` as the `ci-success` job and depends on `[format, clippy, test, build-wasm]`.
+
+### Minimum Rule Settings
+
+```
+✅ Require a pull request before merging
+    ✅ Require at least 1 approval
+✅ Require status checks to pass before merging
+    ✅ Require branches to be up to date before merging
+    Required checks:
+      - CI / ci-success
+      - CI / WASM Size Check
+✅ Do not allow bypassing the above settings
+```
+
+Direct pushes to `main` must be disabled. All changes must go through a PR that passes the required checks above.
+
+---
+
 ## Best Practices
 
 1. **Test locally first** — run all CI checks locally before pushing. See `.github/workflows/README.md` for the exact commands.
