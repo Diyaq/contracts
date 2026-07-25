@@ -84,6 +84,8 @@ jobs:
               title: '⚠️ TTL Extension Failed - Manual Intervention Required',
               body: `The automatic TTL extension job failed on ${new Date().toISOString()}.
 
+              Follow the manual extension runbook: https://github.com/${{ github.repository }}/blob/main/TTL_POLICY.md#manual-ttl-extension
+
               Please review the workflow run and manually extend TTLs if necessary:
               - Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
               - Network: ${{ inputs.network || 'mainnet' }}

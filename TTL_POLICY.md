@@ -229,6 +229,105 @@ Set up alerts for:
 - Contracts with no TTL bump activity
 - Unexpected storage deletions
 
+## Manual TTL Extension
+
+> **Known-broken state:** The scheduled `extend-ttls.yml` job has failed on every
+> recent run (see #578, #579, #580, and the separately filed automation bug).
+> Until that automation issue is fixed, treat the "Manual Intervention Required"
+> issue it files each week as expected, and follow this runbook every time it
+> fires. Remove this note once the underlying automation bug is resolved and the
+> cron can be trusted again.
+
+When the automated `Extend Contract TTLs` workflow fails, or you need to extend
+TTLs outside the schedule, run `scripts/extend-ttls.sh` directly.
+
+### 1. Prerequisites
+
+- The [Stellar CLI](https://developers.stellar.org/docs/tools/cli/stellar-cli) (`stellar`) installed and on `PATH`.
+- A `deployments/<network>.json` manifest containing the contract IDs to extend (e.g. `deployments/mainnet.json`).
+- A Stellar CLI identity/secret with enough XLM to pay the extension fees for every contract in the manifest.
+
+### 2. Identity / secret to use
+
+- **Mainnet:** use the identity backing the `MAINNET_DEPLOYER_IDENTITY` GitHub Actions secret — the same
+  identity the scheduled job authenticates with. Get the secret value from whoever holds repo/org secret
+  access (repo admin or the deployment owner), then import it locally before running the script:
+
+  ```bash
+  stellar keys add mainnet-deployer --secret-key   # paste the MAINNET_DEPLOYER_IDENTITY secret value
+  ```
+
+  Never commit this secret or paste it into a shell history file that gets synced anywhere. Prefer an
+  interactive prompt (as above) over passing `--secret-key` inline.
+
+- **Testnet:** use the identity backing `TESTNET_DEPLOYER_IDENTITY`, imported the same way under a
+  different local key name (e.g. `testnet-deployer`).
+
+### 3. Run the script
+
+```bash
+# Dry run first — logs what would be extended without submitting any transactions.
+./scripts/extend-ttls.sh \
+  --network mainnet \
+  --identity mainnet-deployer \
+  --ledgers-to-extend 535680 \
+  --dry-run
+
+# Then the real run.
+./scripts/extend-ttls.sh \
+  --network mainnet \
+  --identity mainnet-deployer \
+  --ledgers-to-extend 535680
+```
+
+Key flags (see `./scripts/extend-ttls.sh --help` for the full list):
+
+- `--network <name>` — `mainnet` or `testnet`.
+- `--identity <name>` — the local CLI identity name from step 2 (not the raw secret).
+- `--ledgers-to-extend <count>` — defaults to `535680` (~1 year at 5s/ledger); match the value the
+  cron job normally uses unless you have a specific reason to diverge.
+- `--dry-run` — logs the contracts that would be extended without calling `stellar contract extend`.
+
+The script reads contract IDs out of `deployments/<network>.json` and calls `stellar contract extend`
+for each one, printing an `Extended: N / Failed: N / Total: N` summary at the end and exiting non-zero
+if any contract failed.
+
+### 4. Verify success
+
+- **Script output:** confirm the summary line reports `Failed: 0` and that every contract ID logged an
+  `Extending TTL for: <id>` line without a following `WARNING: Failed to extend TTL for: <id>`.
+- **`stellar contract extend` output:** the command itself reports the resulting expiration ledger for
+  each entry it touches — capture the script's stdout (it's not redirected) and confirm the reported
+  ledger is `~LEDGERS_TO_EXTEND` ledgers ahead of the ledger the transaction landed in.
+- **Current TTL / expiry lookup (per contract, without extending anything):** query the contract
+  instance's `liveUntilLedgerSeq` via [Stellar Laboratory](https://laboratory.stellar.org)'s "Ledger
+  Entries" / contract-data explorer for the target network, using the contract's `C...` address — or
+  call the network's Soroban RPC `getLedgerEntries` method directly with the contract instance's
+  ledger key, and compare the returned `liveUntilLedgerSeq` against the current sequence from
+  `getLatestLedger`:
+
+  ```bash
+  RPC_URL="https://mainnet.sorobanrpc.com"   # use the network's RPC endpoint
+
+  curl -s -X POST "$RPC_URL" -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getLatestLedger"}' | jq '.result.sequence'
+  ```
+
+  The contract is healthy if `liveUntilLedgerSeq` is comfortably above the current ledger sequence
+  (well beyond `CRITICAL_THRESHOLD`, ~86,400 ledgers / ~1 day, from `scripts/extend-ttls.sh`). See the
+  [Stellar CLI TTL cookbook](https://developers.stellar.org/docs/tools/cli/cookbook/extend-contract-instance)
+  for how to encode a contract instance's ledger key for `getLedgerEntries`.
+
+### 5. If extension still fails
+
+- Re-run with `--dry-run` to confirm the manifest and contract IDs are being parsed correctly.
+- Check the identity's XLM balance — insufficient balance is the most common cause of `stellar contract
+  extend` failures.
+- Confirm `deployments/<network>.json` is up to date and every listed contract ID is still deployed.
+- If the failure persists, escalate in the deployment/automation-bug issue rather than retrying
+  indefinitely — repeated manual extension without addressing the root cause just delays discovering why
+  the cron job itself is broken.
+
 ## Compliance Checklist
 
 - [ ] All critical healthcare data uses Critical retention class
