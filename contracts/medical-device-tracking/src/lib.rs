@@ -452,6 +452,10 @@ impl MedicalDeviceRegistry {
             return Err(Error::DeviceNotActive);
         }
 
+        if provider_id != record.implanting_provider {
+            return Err(Error::NotAuthorized);
+        }
+
         record.is_active = false;
         record.removal_date = Some(removal_date);
         record.removal_reason = Some(removal_reason);

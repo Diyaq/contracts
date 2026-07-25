@@ -448,6 +448,20 @@ fn test_remove_signer_threshold_breach_returns_error() {
 }
 
 #[test]
+fn test_remove_signer_quorum_breach_returns_error() {
+    // 5 signers, threshold=3, quorum_min=5 → removing any signer would leave
+    // only 4 signers, making quorum_min=5 permanently unreachable.
+    let (_env, signers, client) = setup_with_quorum(5, 3, 5);
+    let s0 = signers.get(0).unwrap();
+    let s1 = signers.get(1).unwrap();
+    let err = client
+        .try_propose_signer_change(&s0, &SignerChangeKind::Remove, &s1)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::QuorumBreached);
+}
+
+#[test]
 fn test_remove_non_signer_returns_error() {
     let (env, signers, client) = setup(3, 2);
     let s0 = signers.get(0).unwrap();

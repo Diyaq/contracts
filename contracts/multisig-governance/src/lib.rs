@@ -54,6 +54,8 @@ pub enum Error {
     AlreadySigner      = 12,
     /// Removing this signer would make the threshold unreachable.
     ThresholdBreached  = 13,
+    /// Removing this signer would make the quorum minimum unreachable.
+    QuorumBreached     = 14,
 }
 
 #[contracttype]
@@ -138,6 +140,9 @@ impl MultisigGovernance {
             return Err(Error::AlreadyInitialized);
         }
         if threshold == 0 || threshold as usize > signers.len() as usize {
+            return Err(Error::InvalidThreshold);
+        }
+        if quorum_min > signers.len() {
             return Err(Error::InvalidThreshold);
         }
         env.storage().persistent().set(&DataKey::Signers, &signers);
@@ -484,6 +489,15 @@ impl MultisigGovernance {
                 // After removal there must still be enough signers to meet threshold.
                 if signers.len() <= threshold {
                     return Err(Error::ThresholdBreached);
+                }
+                // After removal there must still be enough signers to meet quorum.
+                let quorum_min: u32 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::QuorumMin)
+                    .unwrap_or(0);
+                if signers.len() - 1 < quorum_min {
+                    return Err(Error::QuorumBreached);
                 }
                 // Target must be a current signer.
                 if !is_signer(&env, &signers, &target) {
