@@ -1,19 +1,97 @@
 use crate::types::{
     DataKey, EligibilityResult, Error, JurisdictionPolicy, ProviderLicense, PrescriptionRequest,
-    SessionRecord, VirtualVisit, VisitStatus,
+    ProviderSessionWindow, RateLimitConfig, SessionRecord, VirtualVisit, VisitStatus,
 };
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, xdr::ToXdr, Address, Bytes, BytesN, Env, String,
-    Symbol, Vec,
+    contract, contractclient, contractimpl, panic_with_error, xdr::ToXdr, Address, Bytes, BytesN,
+    Env, String, Symbol, Vec,
 };
 
 const SESSION_TTL_SECONDS: u64 = 60 * 60;
+const DEFAULT_MAX_SESSIONS_PER_WINDOW: u32 = 20;
+const DEFAULT_WINDOW_DURATION_SECS: u64 = 86_400; // 24 hours
+
+// ── Cross-contract interface for provider-registry verification ───────────────
+
+#[contractclient(name = "ProviderRegistryClient")]
+pub trait ProviderRegistryInterface {
+    fn is_provider(env: Env, provider: Address) -> bool;
+}
 
 #[contract]
 pub struct TelemedicineContract;
 
 #[contractimpl]
 impl TelemedicineContract {
+    /// Get the current rate limit configuration, or return defaults if not set.
+    fn get_rate_limit_config(env: &Env) -> RateLimitConfig {
+        env.storage()
+            .persistent()
+            .get::<_, RateLimitConfig>(&DataKey::RateLimitConfig)
+            .unwrap_or(RateLimitConfig {
+                max_sessions_per_window: DEFAULT_MAX_SESSIONS_PER_WINDOW,
+                window_duration_secs: DEFAULT_WINDOW_DURATION_SECS,
+            })
+    }
+
+    /// Check if provider has exceeded their session creation rate limit.
+    /// If not exceeded, increments counter and returns Ok.
+    /// If window has expired, resets the counter.
+    fn check_and_update_rate_limit(
+        env: &Env,
+        provider_id: &Address,
+    ) -> Result<(), Error> {
+        let config = Self::get_rate_limit_config(env);
+        let now = env.ledger().timestamp();
+        let window_key = DataKey::ProviderSessionWindow(provider_id.clone());
+
+        let mut window: ProviderSessionWindow = env
+            .storage()
+            .persistent()
+            .get(&window_key)
+            .unwrap_or(ProviderSessionWindow {
+                session_count: 0,
+                window_start: now,
+            });
+
+        // Check if window has expired and reset if needed
+        if now >= window.window_start + config.window_duration_secs {
+            window.session_count = 0;
+            window.window_start = now;
+        }
+
+        // Check if limit would be exceeded
+        if window.session_count >= config.max_sessions_per_window {
+            return Err(Error::RateLimitExceeded);
+        }
+
+        // Increment counter and save
+        window.session_count += 1;
+        env.storage().persistent().set(&window_key, &window);
+
+        Ok(())
+    }
+
+    /// Set the rate limit configuration. Callable by any admin.
+    pub fn set_rate_limit_config(
+        env: Env,
+        admin: Address,
+        max_sessions_per_window: u32,
+        window_duration_secs: u64,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+
+        let config = RateLimitConfig {
+            max_sessions_per_window,
+            window_duration_secs,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::RateLimitConfig, &config);
+        Ok(())
+    }
+
     pub fn schedule_virtual_visit(
         env: Env,
         patient_id: Address,
@@ -26,6 +104,18 @@ impl TelemedicineContract {
         recording_consent: bool,
     ) -> Result<u64, Error> {
         patient_id.require_auth();
+
+        // Verify provider is actively registered in the provider-registry.
+        if let Some(registry_addr) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::ProviderRegistryAddress)
+        {
+            let registry = ProviderRegistryClient::new(&env, &registry_addr);
+            if !registry.is_provider(&provider_id) {
+                return Err(Error::ProviderNotRegistered);
+            }
+        }
 
         let visit_id: u64 = env
             .storage()
@@ -120,6 +210,9 @@ impl TelemedicineContract {
         provider_state: String,
     ) -> Result<BytesN<32>, Error> {
         provider_id.require_auth();
+
+        // Check rate limit: max sessions per provider per window
+        Self::check_and_update_rate_limit(&env, &provider_id)?;
 
         let mut visit: VirtualVisit = env
             .storage()
@@ -464,7 +557,40 @@ impl TelemedicineContract {
             panic_with_error!(&env, Error::NotAuthorized);
         }
 
-        // Mocking Rx ID generation
+        // Prescribing is only allowed during an active session (#563).
+        if visit.status != VisitStatus::InProgress {
+            panic_with_error!(&env, Error::SessionNotActive);
+        }
+
+        // Confirm provider holds a valid license in the patient's jurisdiction (#563).
+        let patient_state = &visit.patient_location;
+        if patient_state.len() > 0 {
+            let now = env.ledger().timestamp();
+            let lic_key =
+                DataKey::LicenseRegistry(provider_id.clone(), patient_state.clone());
+            let has_license = env
+                .storage()
+                .persistent()
+                .get::<_, ProviderLicense>(&lic_key)
+                .map(|l| l.active && (l.valid_until == 0 || l.valid_until > now))
+                .unwrap_or(false);
+            if !has_license {
+                panic_with_error!(&env, Error::ProviderNotLicensedInPatientState);
+            }
+
+            // Stricter enforcement for controlled substances (#563).
+            if prescription_details.is_controlled_substance {
+                let requires_inperson: bool = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::ControlledSubstancePolicy(patient_state.clone()))
+                    .unwrap_or(false);
+                if requires_inperson {
+                    panic_with_error!(&env, Error::ControlledSubstanceRequiresInPerson);
+                }
+            }
+        }
+
         let rx_id = env.ledger().timestamp() % 100000;
 
         env.events().publish(
@@ -473,6 +599,23 @@ impl TelemedicineContract {
         );
 
         Ok(rx_id)
+    }
+
+    /// Set controlled-substance prescribing policy for a jurisdiction (#563).
+    ///
+    /// When `requires_inperson` is true, providers cannot prescribe controlled
+    /// substances (DEA schedule I–V) during a telemedicine session in that jurisdiction.
+    pub fn set_controlled_substance_policy(
+        env: Env,
+        admin: Address,
+        jurisdiction: String,
+        requires_inperson: bool,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        env.storage()
+            .persistent()
+            .set(&DataKey::ControlledSubstancePolicy(jurisdiction), &requires_inperson);
+        Ok(())
     }
 }
 

@@ -1,5 +1,30 @@
 #![no_std]
-#![allow(deprecated)]
+
+//! # Access Control Contract
+//!
+//! Comprehensive role-based access control (RBAC) system with unified consent engine,
+//! emergency access overrides, and audit trail support for HIPAA-compliant healthcare data access.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Role-Based Access Control (RBAC) with nine roles (Admin, Doctor, Nurse,
+//! Patient, Insurer, Auditor, Provider, PayerReviewer, EmergencyResponder). Expiring role assignments,
+//! entity registration validation, and composite uniqueness indexes prevent unauthorized access.
+//!
+//! **Audit Controls:** Monotonic operation IDs (op_id) track every access grant, revocation, consent,
+//! and emergency access event. Events published: grant, revoke, consent, revoke_consent, did_aud,
+//! emergency_access, deactivate, role_grant, role_revoke. Audit systems can replay events for
+//! forensic analysis and compliance reporting.
+//!
+//! **Data Retention Policy:** Explicit consent records (ConsentRecord) with configurable expiration;
+//! temporary storage for emergency access grants (1-hour TTL); persistent storage for role assignments
+//! and access permissions. Deregister_patient removes all patient-specific state including Entity,
+//! AccessList, DID, and all Consent records.
+//!
+//! **Encryption/Integrity:** DID (W3C Decentralized Identifier) registration per address provides
+//! cryptographic identity anchoring. Commit-reveal anti-front-running mechanism via SHA256 hashing.
+//! Rate limiting (10 ops/block) prevents consent operation abuse. All cryptographic operations use
+//! Soroban's verified crypto module.
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address, Bytes,
@@ -37,7 +62,22 @@ pub enum ContractError {
     RoleAlreadyGranted = 21,
     RoleNotFound = 22,
     RateLimitExceeded = 23,
+    /// A Vec parameter or accumulator exceeds its maximum allowed length.
+    InputTooLarge = 24,
+    /// A commit-reveal commit has expired (older than COMMIT_EXPIRY_SECS).
+    CommitExpired = 25,
+    /// The batch of role assignments exceeds the maximum allowed size.
+    BatchTooLarge = 26,
 }
+
+/// Maximum number of access permissions a single grantee may accumulate.
+pub const MAX_ACCESS_LIST_LEN: u32 = 200;
+/// Maximum number of addresses authorized for a single resource.
+pub const MAX_RESOURCE_AUTHORIZED: u32 = 200;
+/// Maximum entries in a grant_roles_batch call.
+pub const BATCH_SIZE_LIMIT: u32 = 20;
+/// Commit-reveal window: commits older than this many seconds are rejected.
+pub const COMMIT_EXPIRY_SECS: u64 = 3600;
 
 /// --------------------
 /// Role Types (RBAC)
@@ -62,6 +102,16 @@ pub struct RoleAssignment {
     pub granted_by: Address,
     pub granted_at: u64,
     pub expires_at: u64,
+}
+
+/// Entry in a bulk role-assignment batch (#491).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleBatchEntry {
+    pub entity: Address,
+    pub role: Role,
+    /// Role lifetime in seconds from the time of the batch call; 0 = no expiry.
+    pub duration_secs: u64,
 }
 
 /// --------------------
@@ -158,6 +208,20 @@ pub struct PendingCommit {
 }
 
 /// --------------------
+/// #489: Emergency access override record
+/// --------------------
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyAccessRecord {
+    pub responder: Address,
+    pub justification_hash: BytesN<32>,
+    pub granted_at: u64,
+    /// Expires one hour (3600 seconds) after `granted_at`.
+    pub expires_at: u64,
+    pub op_id: u64,
+}
+
+/// --------------------
 /// Storage Keys
 /// --------------------
 #[contracttype]
@@ -182,6 +246,8 @@ pub enum DataKey {
     RoleAssignment(Address, Role),
     // Rate limiting: (address, ledger_sequence) -> u32 count
     RateLimit(Address, u32),
+    // #489: (responder, patient) -> EmergencyAccessRecord
+    EmergencyAccess(Address, Address),
 }
 
 #[contract]
@@ -231,8 +297,28 @@ impl AccessControl {
         Some(assignment)
     }
 
+    /// Returns `Ok(assignment)` if the role is active, `Err(ConsentExpired)` if the
+    /// role exists but has expired, or `Err(RoleNotFound)` if it was never granted.
+    fn check_role_expiry(
+        env: &Env,
+        address: &Address,
+        role: &Role,
+    ) -> Result<RoleAssignment, ContractError> {
+        let key = DataKey::RoleAssignment(address.clone(), role.clone());
+        let assignment: RoleAssignment = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::RoleNotFound)?;
+        let now = env.ledger().timestamp();
+        if assignment.expires_at != 0 && assignment.expires_at <= now {
+            return Err(ContractError::ConsentExpired);
+        }
+        Ok(assignment)
+    }
+
     /// Asserts that `caller` holds `role` (and the role has not expired).
-    /// Returns `InsufficientRole` if the check fails.
+    /// Returns `ConsentExpired` if expired, `InsufficientRole` otherwise.
     fn require_role(
         env: &Env,
         caller: &Address,
@@ -245,10 +331,11 @@ impl AccessControl {
                 return Ok(());
             }
         }
-        if Self::load_active_role(env, caller, role).is_some() {
-            return Ok(());
+        match Self::check_role_expiry(env, caller, role) {
+            Ok(_) => Ok(()),
+            Err(ContractError::ConsentExpired) => Err(ContractError::ConsentExpired),
+            Err(_) => Err(ContractError::InsufficientRole),
         }
-        Err(ContractError::InsufficientRole)
     }
 
     // -------------------------------------------------------------------------
@@ -283,11 +370,14 @@ impl AccessControl {
     // Role management
     // -------------------------------------------------------------------------
 
-    /// Grant `role` to `grantee`. Only an address that itself holds the
-    /// `Admin` role (or is the stored admin address) may call this.
+    /// Grant `role` to `grantee`. The grantor must hold the `Admin` role **or**
+    /// hold a role whose level is strictly higher than the role being granted.
+    ///
+    /// Role hierarchy (higher value = more privileged):
+    ///   Admin(4) > Doctor(3) > Nurse(2) > Patient/Insurer/Auditor/Provider/... (1)
     ///
     /// # Arguments
-    /// * `granter`    - Must hold the `Admin` role.
+    /// * `granter`    - Must hold a role with level > role_level(role).
     /// * `grantee`    - Address receiving the role.
     /// * `role`       - The role to grant.
     /// * `expires_at` - Expiry timestamp; pass `0` for no expiry.
@@ -299,7 +389,14 @@ impl AccessControl {
         expires_at: u64,
     ) -> Result<(), ContractError> {
         granter.require_auth();
-        Self::require_role(&env, &granter, &Role::Admin)?;
+
+        // Determine the granter's highest active role level.
+        let granter_level = Self::highest_role_level(&env, &granter);
+        let required_level = Self::role_level(&role);
+
+        if granter_level <= required_level {
+            return Err(ContractError::InsufficientRole);
+        }
 
         let key = DataKey::RoleAssignment(grantee.clone(), role.clone());
         if env.storage().persistent().has(&key) {
@@ -531,6 +628,9 @@ impl AccessControl {
             .get(&access_key)
             .unwrap_or(Vec::new(&env));
 
+        if access_list.len() >= MAX_ACCESS_LIST_LEN {
+            return Err(ContractError::InputTooLarge);
+        }
         access_list.push_back(permission);
         env.storage().persistent().set(&access_key, &access_list);
 
@@ -544,6 +644,9 @@ impl AccessControl {
             .persistent()
             .get(&resource_key)
             .unwrap_or(Vec::new(&env));
+        if authorized.len() >= MAX_RESOURCE_AUTHORIZED {
+            return Err(ContractError::InputTooLarge);
+        }
         authorized.push_back(grantee.clone());
         env.storage().persistent().set(&resource_key, &authorized);
 
@@ -1030,6 +1133,76 @@ impl AccessControl {
     }
 
     // -----------------------------------------------------------------------
+    // #489: Emergency access override
+    // -----------------------------------------------------------------------
+
+    /// Grant 1-hour read-only emergency access to `patient` data.
+    ///
+    /// Caller must hold the `EmergencyResponder` role.  An
+    /// `EmergencyAccessGranted` event is always emitted and cannot be
+    /// suppressed.  On the patient's next interaction the emitted event
+    /// serves as the notification flag.
+    ///
+    /// # Arguments
+    /// * `responder`          - Must hold `Role::EmergencyResponder`
+    /// * `patient`            - The patient whose data is being accessed
+    /// * `justification_hash` - sha256 of the written justification (stored off-chain)
+    pub fn emergency_access(
+        env: Env,
+        responder: Address,
+        patient: Address,
+        justification_hash: BytesN<32>,
+    ) -> Result<u64, ContractError> {
+        responder.require_auth();
+
+        // Only EmergencyResponder role (or admin) may call this.
+        Self::require_role(&env, &responder, &Role::EmergencyResponder)?;
+
+        let now = env.ledger().timestamp();
+        let expires_at = now + 3600; // 1 hour
+
+        let op_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::OpCounter)
+            .unwrap_or(0u64)
+            + 1;
+        env.storage().instance().set(&DataKey::OpCounter, &op_id);
+
+        let record = EmergencyAccessRecord {
+            responder: responder.clone(),
+            justification_hash: justification_hash.clone(),
+            granted_at: now,
+            expires_at,
+            op_id,
+        };
+
+        // Stored as temporary so it naturally expires; TTL = 3600 ledgers.
+        let key = DataKey::EmergencyAccess(responder.clone(), patient.clone());
+        env.storage().temporary().set(&key, &record);
+        env.storage().temporary().extend_ttl(&key, 3600, 3600);
+
+        // Mandatory, unsuppressable audit event.
+        env.events().publish(
+            (symbol_short!("emrg_acc"), responder, patient),
+            (justification_hash, expires_at, op_id),
+        );
+
+        Ok(op_id)
+    }
+
+    /// Check whether an active (non-expired) emergency access grant exists for
+    /// `(responder, patient)`.  Safe to call as a view.
+    pub fn check_emergency_access(env: Env, responder: Address, patient: Address) -> bool {
+        let key = DataKey::EmergencyAccess(responder, patient);
+        let record: Option<EmergencyAccessRecord> = env.storage().temporary().get(&key);
+        match record {
+            Some(r) => env.ledger().timestamp() < r.expires_at,
+            None => false,
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Patient deregistration hook
     // -----------------------------------------------------------------------
 
@@ -1095,6 +1268,49 @@ impl AccessControl {
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
+
+    /// Numeric role level for hierarchy enforcement (#488).
+    /// Higher value = more privileged.  Admin must be strictly highest.
+    fn role_level(role: &Role) -> u8 {
+        match role {
+            Role::Admin => 4,
+            Role::Doctor => 3,
+            Role::Nurse => 2,
+            _ => 1,
+        }
+    }
+
+    /// Returns the highest active role level held by `address`, or 0 if none.
+    /// The stored admin address is unconditionally treated as level 5.
+    fn highest_role_level(env: &Env, address: &Address) -> u8 {
+        let admin_opt: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
+        if let Some(ref admin) = admin_opt {
+            if address == admin {
+                return 5;
+            }
+        }
+        let roles = [
+            Role::Admin,
+            Role::Doctor,
+            Role::Nurse,
+            Role::Patient,
+            Role::Insurer,
+            Role::Auditor,
+            Role::Provider,
+            Role::PayerReviewer,
+            Role::EmergencyResponder,
+        ];
+        let mut max_level: u8 = 0;
+        for role in &roles {
+            if Self::load_active_role(env, address, role).is_some() {
+                let lvl = Self::role_level(role);
+                if lvl > max_level {
+                    max_level = lvl;
+                }
+            }
+        }
+        max_level
+    }
 
     fn validate_did(did: &Bytes) -> Result<(), ContractError> {
         // Minimum: "did:a:b" = 7 bytes
@@ -1169,8 +1385,70 @@ impl AccessControl {
             return Err(ContractError::CommitAlreadyUsed);
         }
 
+        if env.ledger().timestamp() > commit.committed_at + COMMIT_EXPIRY_SECS {
+            return Err(ContractError::CommitExpired);
+        }
+
         commit.used = true;
         env.storage().temporary().set(&key, &commit);
+        Ok(())
+    }
+
+    /// Grant a role to multiple entities in a single atomic call (#491).
+    ///
+    /// # Arguments
+    /// * `admin`       - Must hold a role level strictly higher than each role being granted.
+    /// * `assignments` - Vec of `RoleBatchEntry`; capped at `BATCH_SIZE_LIMIT`.
+    pub fn grant_roles_batch(
+        env: Env,
+        admin: Address,
+        assignments: Vec<RoleBatchEntry>,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+
+        if assignments.len() > BATCH_SIZE_LIMIT {
+            return Err(ContractError::BatchTooLarge);
+        }
+
+        let granter_level = Self::highest_role_level(&env, &admin);
+        let now = env.ledger().timestamp();
+
+        // Validate all entries before writing any (atomicity guarantee).
+        for i in 0..assignments.len() {
+            let entry = assignments.get(i).unwrap();
+            // Hierarchy check
+            if granter_level <= Self::role_level(&entry.role) {
+                return Err(ContractError::InsufficientRole);
+            }
+            let key = DataKey::RoleAssignment(entry.entity.clone(), entry.role.clone());
+            if env.storage().persistent().has(&key) {
+                if Self::load_active_role(&env, &entry.entity, &entry.role).is_some() {
+                    return Err(ContractError::RoleAlreadyGranted);
+                }
+            }
+        }
+
+        // Write phase.
+        for i in 0..assignments.len() {
+            let entry = assignments.get(i).unwrap();
+            let expires_at = if entry.duration_secs == 0 {
+                0u64
+            } else {
+                now + entry.duration_secs
+            };
+            let key = DataKey::RoleAssignment(entry.entity.clone(), entry.role.clone());
+            let assignment = RoleAssignment {
+                granted_by: admin.clone(),
+                granted_at: now,
+                expires_at,
+            };
+            env.storage().persistent().set(&key, &assignment);
+            env.events().publish(
+                (symbol_short!("role_grt"), entry.entity, entry.role),
+                symbol_short!("batch"),
+            );
+        }
+
         Ok(())
     }
 }

@@ -1,10 +1,9 @@
 #![no_std]
 
-//! ZK Eligibility Contract
+//! # ZK Eligibility Contract
 //!
-//! Manages verifier key versioning and on-chain proof verification for
-//! eligibility-sensitive operations (e.g. telemedicine cross-state licensing,
-//! insurance claim gating).
+//! Manages verifier key versioning and zero-knowledge proof verification for eligibility-sensitive
+//! healthcare operations (telemedicine cross-state licensing, insurance claim gating, etc).
 //!
 //! ## Design
 //! - Admin registers versioned verifier keys (VK). Each VK is bound to a
@@ -16,7 +15,9 @@
 //! - Verification cost is bounded: public_inputs length is capped at
 //!   MAX_PUBLIC_INPUTS and proof length at MAX_PROOF_BYTES.
 //! - A successful verification is recorded on-chain (nullifier pattern) so
-//!   the same proof cannot be replayed.
+//!   the same proof cannot be replayed within the TTL window.
+//! - Nullifiers expire after `nullifier_ttl_ledgers` ledgers; expired
+//!   nullifiers allow re-verification with the same proof.
 //! - Integration point: other contracts call `verify_eligibility` and receive
 //!   a typed `Ok(())` / `Err(Error)` they can gate their own logic on.
 
@@ -33,6 +34,10 @@ mod test;
 pub const MAX_PUBLIC_INPUTS: u32 = 16;
 /// Maximum proof byte length accepted (Groth16 ~192 bytes; give headroom).
 pub const MAX_PROOF_BYTES: u32 = 512;
+/// Maximum subjects/bundles accepted in a single batch call.
+pub const MAX_BATCH_SIZE: u32 = 10;
+/// Default nullifier TTL in ledgers when not explicitly configured (~1 day at 5s/ledger).
+pub const DEFAULT_NULLIFIER_TTL_LEDGERS: u32 = 17_280;
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -49,6 +54,7 @@ pub enum Error {
     TooManyPublicInputs  = 7,
     ProofAlreadyUsed     = 8,
     VerificationFailed   = 9,
+    BatchTooLarge        = 10,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -59,10 +65,12 @@ pub enum DataKey {
     Admin,
     /// Verifier key for a given schema version.
     VerifierKey(u32),
-    /// Nullifier: proof hash → bool (prevents replay).
+    /// Nullifier: proof hash → NullifierRecord (schema version + expiry ledger).
     Nullifier(BytesN<32>),
     /// Cached subject eligibility after a successful proof.
     Eligibility(Address),
+    /// Configurable TTL (in ledgers) for nullifier entries.
+    NullifierTtlLedgers,
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -77,6 +85,21 @@ pub struct VerifierKeyEntry {
     pub schema_version: u32,
     /// Whether this key is still active (admin can deprecate old versions).
     pub active: bool,
+    /// When non-zero, this deprecated schema was migrated to `migrated_to`.
+    /// Nullifiers recorded under this schema remain valid after migration.
+    /// When zero the schema was deprecated without migration; its nullifiers
+    /// are treated as expired so subjects can re-verify under a new schema.
+    pub migrated_to: u32,
+}
+
+/// Nullifier record stored on successful proof verification.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NullifierRecord {
+    /// Schema version the proof was verified against.
+    pub schema_version: u32,
+    /// Ledger sequence number at which this nullifier expires.
+    pub expires_at_ledger: u32,
 }
 
 /// Proof submission bundle.
@@ -107,6 +130,16 @@ impl ZkEligibility {
         Ok(())
     }
 
+    /// Set the nullifier TTL in ledgers. Admin only.
+    pub fn set_nullifier_ttl(env: Env, admin: Address, ttl_ledgers: u32) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        Self::assert_admin(&env, &admin)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::NullifierTtlLedgers, &ttl_ledgers);
+        Ok(())
+    }
+
     /// Register a verifier key for a new schema version. Admin only.
     /// Each schema_version may only be registered once; rotate by deprecating
     /// the old version and registering a new one.
@@ -128,6 +161,7 @@ impl ZkEligibility {
             vk,
             schema_version,
             active: true,
+            migrated_to: 0,
         };
         env.storage().persistent().set(&key, &entry);
         env.events()
@@ -159,10 +193,61 @@ impl ZkEligibility {
         Ok(())
     }
 
+    /// Migrate a deprecated schema to a new version, carrying nullifiers forward.
+    ///
+    /// After a successful migration:
+    /// - `old_version` is marked `deprecated-migrated`; its nullifiers remain
+    ///   valid, preventing replay under the new schema.
+    /// - Nullifiers from schemas deprecated WITHOUT migration are treated as
+    ///   invalid, allowing subjects to re-verify under the new key.
+    ///
+    /// `migration_proof` is verified against the new schema's verifier key.
+    pub fn migrate_schema(
+        env: Env,
+        admin: Address,
+        old_version: u32,
+        new_version: u32,
+        migration_proof: Bytes,
+    ) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        Self::assert_admin(&env, &admin)?;
+
+        let old_key = DataKey::VerifierKey(old_version);
+        let mut old_entry: VerifierKeyEntry = env
+            .storage()
+            .persistent()
+            .get(&old_key)
+            .ok_or(Error::SchemaNotFound)?;
+
+        let new_entry: VerifierKeyEntry = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VerifierKey(new_version))
+            .ok_or(Error::SchemaNotFound)?;
+
+        if !new_entry.active {
+            return Err(Error::SchemaNotFound);
+        }
+
+        if !Self::run_verification(&env, &new_entry.vk, &migration_proof, &Vec::new(&env)) {
+            return Err(Error::VerificationFailed);
+        }
+
+        old_entry.migrated_to = new_version;
+        env.storage().persistent().set(&old_key, &old_entry);
+
+        env.events().publish(
+            (symbol_short!("sch_migr"), old_version),
+            (new_version,),
+        );
+        Ok(())
+    }
+
     /// Verify a ZK proof of eligibility.
     ///
     /// On success the proof nullifier is stored so the proof cannot be
-    /// replayed. Returns `Ok(())` which callers use to gate their own logic.
+    /// replayed within the TTL window. Returns `Ok(())` which callers use
+    /// to gate their own logic.
     ///
     /// `subject` is the address whose eligibility is being proven; it must
     /// sign the call so the proof cannot be submitted on behalf of another
@@ -183,6 +268,16 @@ impl ZkEligibility {
             return Err(Error::TooManyPublicInputs);
         }
 
+        // ── Expiry check (public_inputs[0] = big-endian u64 expiry timestamp) ─
+        let expiry_input = bundle
+            .public_inputs
+            .get(EXPIRY_INPUT_IDX)
+            .ok_or(Error::ProofExpired)?;
+        let expiry = Self::decode_expiry_u64(&expiry_input);
+        if expiry <= env.ledger().timestamp() {
+            return Err(Error::ProofExpired);
+        }
+
         // ── Verifier key lookup ───────────────────────────────────────────────
         let vk_entry: VerifierKeyEntry = env
             .storage()
@@ -196,27 +291,17 @@ impl ZkEligibility {
 
         // ── Nullifier check ───────────────────────────────────────────────────
         let proof_hash: BytesN<32> = env.crypto().sha256(&bundle.proof).into();
-        let nullifier_key = DataKey::Nullifier(proof_hash.clone());
-        if env.storage().persistent().has(&nullifier_key) {
+        if Self::nullifier_active(&env, &proof_hash) {
             return Err(Error::ProofAlreadyUsed);
         }
 
         // ── Verification ──────────────────────────────────────────────────────
-        // On Soroban there is no native pairing-based ZK verifier built into
-        // the host. The canonical production approach is to use a Soroban host
-        // function once it is available, or to call an external verifier
-        // contract whose address is stored in the VK entry.
-        //
-        // Here we implement the verification gate that all production code
-        // paths must pass through. The actual cryptographic check is delegated
-        // to `run_verification` which can be swapped for a real verifier
-        // without changing any caller code.
         if !Self::run_verification(&env, &vk_entry.vk, &bundle.proof, &bundle.public_inputs) {
             return Err(Error::VerificationFailed);
         }
 
         // ── Record nullifier ──────────────────────────────────────────────────
-        env.storage().persistent().set(&nullifier_key, &true);
+        Self::store_nullifier(&env, &proof_hash, bundle.schema_version);
         env.storage()
             .persistent()
             .set(&DataKey::Eligibility(subject.clone()), &true);
@@ -228,6 +313,35 @@ impl ZkEligibility {
         Ok(())
     }
 
+    /// Verify eligibility for a batch of up to `MAX_BATCH_SIZE` subjects.
+    ///
+    /// Returns a `Vec<bool>` of the same length as the inputs. A failure at
+    /// index N (invalid proof, expired nullifier, unknown schema, etc.) sets
+    /// that entry to `false` and does not affect other indices.
+    /// Batch sizes exceeding `MAX_BATCH_SIZE` return `Error::BatchTooLarge`.
+    pub fn verify_eligibility_batch(
+        env: Env,
+        subjects: Vec<Address>,
+        bundles: Vec<ProofBundle>,
+    ) -> Result<Vec<bool>, Error> {
+        Self::assert_initialized(&env)?;
+
+        let len = subjects.len();
+        if len > MAX_BATCH_SIZE || bundles.len() > MAX_BATCH_SIZE || len != bundles.len() {
+            return Err(Error::BatchTooLarge);
+        }
+
+        let mut results: Vec<bool> = Vec::new(&env);
+        for i in 0..len {
+            let subject = subjects.get(i).unwrap();
+            let bundle = bundles.get(i).unwrap();
+            subject.require_auth();
+            let ok = Self::try_verify_single(&env, &subject, &bundle);
+            results.push_back(ok);
+        }
+        Ok(results)
+    }
+
     /// Read a verifier key entry (public view).
     pub fn get_verifier_key(env: Env, schema_version: u32) -> Result<VerifierKeyEntry, Error> {
         env.storage()
@@ -236,11 +350,9 @@ impl ZkEligibility {
             .ok_or(Error::SchemaNotFound)
     }
 
-    /// Check whether a proof (identified by its hash) has already been used.
+    /// Check whether a proof (identified by its hash) has an active, unexpired nullifier.
     pub fn is_nullified(env: Env, proof_hash: BytesN<32>) -> bool {
-        env.storage()
-            .persistent()
-            .has(&DataKey::Nullifier(proof_hash))
+        Self::nullifier_active(&env, &proof_hash)
     }
 
     /// Check whether a subject has a cached successful eligibility proof.
@@ -249,6 +361,92 @@ impl ZkEligibility {
             .persistent()
             .get(&DataKey::Eligibility(subject))
             .unwrap_or(false)
+    }
+
+    // ── internal helpers ──────────────────────────────────────────────────────
+
+    /// Returns `true` when the nullifier for `proof_hash` is active:
+    /// - The record exists and has not yet reached its `expires_at_ledger`.
+    /// - The schema it was recorded against is either still active or was
+    ///   migrated to a new version (deprecated-migrated). Non-migrated
+    ///   deprecated schemas have their nullifiers invalidated so subjects
+    ///   can re-verify under the new key.
+    fn nullifier_active(env: &Env, proof_hash: &BytesN<32>) -> bool {
+        let record: NullifierRecord = match env
+            .storage()
+            .persistent()
+            .get(&DataKey::Nullifier(proof_hash.clone()))
+        {
+            Some(r) => r,
+            None => return false,
+        };
+
+        if env.ledger().sequence() >= record.expires_at_ledger {
+            return false;
+        }
+
+        match env
+            .storage()
+            .persistent()
+            .get::<DataKey, VerifierKeyEntry>(&DataKey::VerifierKey(record.schema_version))
+        {
+            Some(entry) => entry.active || entry.migrated_to > 0,
+            None => false,
+        }
+    }
+
+    fn store_nullifier(env: &Env, proof_hash: &BytesN<32>, schema_version: u32) {
+        let ttl: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::NullifierTtlLedgers)
+            .unwrap_or(DEFAULT_NULLIFIER_TTL_LEDGERS);
+        let expires_at = env.ledger().sequence().saturating_add(ttl);
+        env.storage().persistent().set(
+            &DataKey::Nullifier(proof_hash.clone()),
+            &NullifierRecord { schema_version, expires_at_ledger: expires_at },
+        );
+    }
+
+    /// Inner verification logic for a single (subject, bundle) pair that
+    /// returns `bool` instead of `Result` so batch calls can collect partial
+    /// successes without aborting the entire transaction.
+    fn try_verify_single(env: &Env, subject: &Address, bundle: &ProofBundle) -> bool {
+        if bundle.proof.len() > MAX_PROOF_BYTES || bundle.public_inputs.len() > MAX_PUBLIC_INPUTS {
+            return false;
+        }
+
+        let vk_entry: VerifierKeyEntry = match env
+            .storage()
+            .persistent()
+            .get(&DataKey::VerifierKey(bundle.schema_version))
+        {
+            Some(e) => e,
+            None => return false,
+        };
+        if !vk_entry.active {
+            return false;
+        }
+
+        let proof_hash: BytesN<32> = env.crypto().sha256(&bundle.proof).into();
+        if Self::nullifier_active(env, &proof_hash) {
+            return false;
+        }
+
+        if !Self::run_verification(env, &vk_entry.vk, &bundle.proof, &bundle.public_inputs) {
+            return false;
+        }
+
+        Self::store_nullifier(env, &proof_hash, bundle.schema_version);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Eligibility(subject.clone()), &true);
+
+        env.events().publish(
+            (symbol_short!("zk_ok"), subject.clone(), bundle.schema_version),
+            proof_hash,
+        );
+        true
     }
 
     // ── guards ────────────────────────────────────────────────────────────────
@@ -278,6 +476,56 @@ impl ZkEligibility {
             return Err(Error::Unauthorized);
         }
         Ok(())
+    }
+
+    /// Propose transferring admin to `new_admin`. Must be confirmed within 24 hours.
+    pub fn propose_admin_rotation(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        Self::assert_admin(&env, &admin)?;
+        if env.storage().persistent().has(&DataKey::PendingAdmin) {
+            return Err(Error::RotationPending);
+        }
+        let expiry = env.ledger().timestamp() + ADMIN_ROTATION_WINDOW;
+        env.storage().persistent().set(&DataKey::PendingAdmin, &new_admin);
+        env.storage().persistent().set(&DataKey::RotationExpiry, &expiry);
+        Ok(())
+    }
+
+    /// New admin confirms the rotation proposed by the current admin.
+    pub fn accept_admin_rotation(env: Env, new_admin: Address) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        new_admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoRotationPending)?;
+        if new_admin != pending {
+            return Err(Error::NotPendingAdmin);
+        }
+        let expiry: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RotationExpiry)
+            .unwrap_or(0);
+        if env.ledger().timestamp() > expiry {
+            env.storage().persistent().remove(&DataKey::PendingAdmin);
+            env.storage().persistent().remove(&DataKey::RotationExpiry);
+            return Err(Error::RotationExpired);
+        }
+        env.storage().persistent().set(&DataKey::Admin, &new_admin);
+        env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage().persistent().remove(&DataKey::RotationExpiry);
+        Ok(())
+    }
+
+    /// Decode a big-endian u64 from the first 8 bytes of a public input scalar.
+    fn decode_expiry_u64(input: &BytesN<32>) -> u64 {
+        let mut ts: u64 = 0;
+        for i in 0..8u32 {
+            ts = (ts << 8) | (input.get(i).unwrap_or(0) as u64);
+        }
+        ts
     }
 
     /// Cryptographic verification stub.

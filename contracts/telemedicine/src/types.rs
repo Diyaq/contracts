@@ -17,6 +17,12 @@ pub enum Error {
     CrossStateNotPermitted = 11,
     /// Recording metadata cannot be stored without explicit patient consent
     RecordingConsentRequired = 12,
+    /// Prescribing is only allowed during an active (InProgress) session
+    SessionNotActive = 13,
+    /// Provider lacks a valid license in the patient's jurisdiction for prescribing
+    ProviderNotLicensedInPatientState = 14,
+    /// Controlled substance requires in-person visit per jurisdiction policy
+    ControlledSubstanceRequiresInPerson = 15,
 }
 
 /// On-chain record of a provider's license in a given jurisdiction (state/region).
@@ -86,6 +92,9 @@ pub struct PrescriptionRequest {
     pub dosage: String,
     pub frequency: String,
     pub duration_days: u32,
+    /// Whether this is a controlled substance (DEA schedule I–V).
+    /// When true, stricter in-person requirements apply per jurisdiction policy.
+    pub is_controlled_substance: bool,
 }
 
 #[contracttype]
@@ -100,6 +109,24 @@ pub struct SessionRecord {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderSessionWindow {
+    /// Number of sessions created in current window
+    pub session_count: u32,
+    /// Timestamp when the current window started
+    pub window_start: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RateLimitConfig {
+    /// Maximum sessions per provider per window (in seconds)
+    pub max_sessions_per_window: u32,
+    /// Window duration in seconds (default: 86400 = 24 hours)
+    pub window_duration_secs: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     VirtualVisit(u64),
     VisitCount,
@@ -109,4 +136,6 @@ pub enum DataKey {
     LicenseRegistry(Address, String),
     /// jurisdiction -> JurisdictionPolicy
     JurisdictionPolicy(String),
+    /// jurisdiction -> bool (true = requires in-person for controlled substances)
+    ControlledSubstancePolicy(String),
 }

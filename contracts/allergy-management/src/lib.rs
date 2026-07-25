@@ -1,5 +1,29 @@
 #![no_std]
 
+//! # Allergy Management Contract
+//!
+//! Records, tracks, and manages patient allergies with severity levels, resolution tracking,
+//! drug-allergy interaction checking, and provider access control.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Provider registration verification via external provider registry.
+//! Patient access grants to authorized providers only. Access permission checks on allergy retrieval.
+//! Patient auth required for access grant/revoke operations.
+//!
+//! **Audit Controls:** Events emitted for all allergy operations (AllergyRecorded, AllergyUpdated,
+//! AllergyResolved, AccessGranted, AccessRevoked, IncidentCaptured). Severity history maintained
+//! for each allergy with timestamp and update reason. Incident capture with structured evidence
+//! attachment (error_log, state_snapshot, stack_trace, context).
+//!
+//! **Data Retention Policy:** Active allergies marked with AllergyStatus::Active; resolved allergies
+//! retain resolution date and reason. Deregister_patient marks all patient allergies as Deleted,
+//! removes PatientAllergies index, and clears access control grants.
+//!
+//! **Encryption/Integrity:** Allergen and reaction data stored in persistent storage with versioning.
+//! Incident tracking with SHA256 hashing for evidence integrity. Provider registry validation
+//! ensures only authorized providers access allergy records.
+
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, symbol_short, vec, Address, Bytes, Env,
     IntoVal, String, Symbol, Vec,
@@ -376,8 +400,16 @@ impl AllergyManagement {
     pub fn check_drug_allergy_interaction(
         env: Env,
         patient_id: Address,
+        requester: Address,
         drug_name: String,
     ) -> Result<Vec<AllergyInteraction>, Error> {
+        requester.require_auth();
+
+        // Check access permissions (same as get_active_allergies)
+        if !storage::check_access_permission(&env, &patient_id, &requester) {
+            return Err(Error::AccessDenied);
+        }
+
         let mut interactions = Vec::new(&env);
 
         // Get all active allergies for patient
@@ -528,11 +560,9 @@ impl AllergyManagement {
             .persistent()
             .remove(&DataKey::PatientAllergies(patient_id.clone()));
 
-        // Remove all access grants for this patient (iterate known providers via allergy records)
-        // Access grants are keyed AccessControl(patient, provider); we remove the whole patient
-        // namespace by clearing grants found during the allergy scan above.
-        // Since we don't have a separate provider index, we rely on the fact that
-        // AccessControl entries are only meaningful while PatientAllergies exists.
+        // Remove all AccessControl(patient, *) grants using the provider index
+        storage::remove_all_access_grants(&env, &patient_id);
+
         // Emit cleanup event.
         env.events().publish(
             (symbol_short!("pat_dreg"), patient_id),

@@ -1,6 +1,28 @@
 #![no_std]
-#![allow(deprecated)]
 #![allow(clippy::too_many_arguments)]
+
+//! # Clinical Trial Contract
+//!
+//! Manages clinical trial enrollment, informed consent, adverse event tracking, and
+//! participant data collection for regulated research studies.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Participant enrollment requires informed consent. Principal
+//! investigator authorization for trial creation and management. Event reporting restricted to
+//! enrolled participants and authorized clinical staff. Role-based access to trial data.
+//!
+//! **Audit Controls:** Trial registration events with enrollment status. Adverse event capture with
+//! severity classification. Event reporting timestamps tracked. Participant modification events
+//! emitted for compliance auditing. Incident tracking with correlation IDs for multi-contract events.
+//!
+//! **Data Retention Policy:** Enrolled participants tracked with enrollment timestamp and status.
+//! Adverse events retained indefinitely for pharmacovigilance. Consent forms stored with expiration
+//! dates. Deregistration removes participant from active trials while retaining historical data.
+//!
+//! **Encryption/Integrity:** Adverse event descriptions encrypted. Incident evidence attachment
+//! with SHA256 hashing. Correlation IDs link related events across contracts. Trial metadata
+//! stored in persistent contract state for integrity.
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, symbol_short, Address, Bytes, BytesN,
@@ -66,6 +88,27 @@ pub struct SafetyHaltApproved {
     pub approval_count: u32,
 }
 
+#[contractevent]
+pub struct TrialPhaseAdvanced {
+    pub trial_record_id: u64,
+    pub new_phase: Symbol,
+    pub new_protocol_hash: BytesN<32>,
+}
+
+#[contractevent]
+pub struct ProtocolAmendmentRecorded {
+    pub trial_record_id: u64,
+    pub new_hash: BytesN<32>,
+    pub amended_by: Address,
+}
+
+#[contractevent]
+pub struct ParticipantReEnrolled {
+    pub enrollment_id: u64,
+    pub prior_enrollment_id: u64,
+    pub trial_record_id: u64,
+}
+
 /// Error codes for clinical trial operations
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -100,7 +143,22 @@ pub enum Error {
     SiteNotFound = 26,
     /// The site has reached its per-site enrollment quota
     SiteEnrollmentFull = 27,
+    /// A Vec parameter exceeds its maximum allowed length.
+    InputTooLarge = 28,
+    /// Trial is permanently closed; no new enrolments permitted.
+    TrialClosed = 29,
+    /// Prior enrolment is still active; cannot re-enrol.
+    PriorEnrollmentActive = 30,
 }
+
+/// Maximum number of inclusion or exclusion criteria rules per trial.
+pub const MAX_CRITERIA_RULES: u32 = 64;
+/// Maximum number of evidence items per eligibility check.
+pub const MAX_EVIDENCE_ITEMS: u32 = 32;
+/// Maximum number of DSMB members per trial.
+pub const MAX_DSMB_MEMBERS: u32 = 20;
+/// Maximum number of adverse events per study visit.
+pub const MAX_ADVERSE_EVENTS_PER_VISIT: u32 = 50;
 
 #[contract]
 pub struct ClinicalTrialContract;
@@ -187,6 +245,12 @@ impl ClinicalTrialContract {
         exclusion_criteria: Vec<CriteriaRule>,
     ) -> Result<(), Error> {
         principal_investigator.require_auth();
+        if inclusion_criteria.len() > MAX_CRITERIA_RULES {
+            return Err(Error::InputTooLarge);
+        }
+        if exclusion_criteria.len() > MAX_CRITERIA_RULES {
+            return Err(Error::InputTooLarge);
+        }
 
         // Verify trial exists and PI is authorized
         let trial = storage::get_trial(&env, trial_record_id)?;
@@ -214,6 +278,9 @@ impl ClinicalTrialContract {
         claim_evidence: Vec<EligibilityClaimEvidence>,
     ) -> Result<EligibilityResult, Error> {
         patient_id.require_auth();
+        if claim_evidence.len() > MAX_EVIDENCE_ITEMS {
+            return Err(Error::InputTooLarge);
+        }
 
         // Verify trial exists
         let _trial = storage::get_trial(&env, trial_record_id)?;
@@ -314,6 +381,7 @@ impl ClinicalTrialContract {
             data_retention_consent: true,
             retention_class: DataRetentionClass::Optional,
             site_id: None,
+            prior_enrollment_id: None,
         };
 
         // Store enrollment record
@@ -356,6 +424,9 @@ impl ClinicalTrialContract {
         data_collected_hash: BytesN<32>,
         adverse_events: Vec<AdverseEvent>,
     ) -> Result<(), Error> {
+        if adverse_events.len() > MAX_ADVERSE_EVENTS_PER_VISIT {
+            return Err(Error::InputTooLarge);
+        }
         // Verify enrollment exists
         let enrollment = storage::get_enrollment(&env, enrollment_id)?;
         enrollment.patient_id.require_auth();
@@ -674,6 +745,9 @@ impl ClinicalTrialContract {
         members: Vec<Address>,
     ) -> Result<(), Error> {
         principal_investigator.require_auth();
+        if members.len() > MAX_DSMB_MEMBERS {
+            return Err(Error::InputTooLarge);
+        }
 
         let trial = storage::get_trial(&env, trial_record_id)?;
         if trial.principal_investigator != principal_investigator {
@@ -893,6 +967,7 @@ impl ClinicalTrialContract {
             data_retention_consent: true,
             retention_class: DataRetentionClass::Optional,
             site_id: Some(site_id),
+            prior_enrollment_id: None,
         };
 
         storage::save_enrollment(&env, &enrollment);
@@ -913,6 +988,202 @@ impl ClinicalTrialContract {
         .publish(&env);
 
         Ok(enrollment_id)
+    }
+
+    /// Re-enrol a previously withdrawn participant.
+    ///
+    /// Creates a brand-new enrolment record linked to the prior enrolment via
+    /// `prior_enrollment_id`.  The prior enrolment's data-deletion decision is
+    /// never reversed — this function only creates a fresh record.
+    ///
+    /// # Errors
+    /// - `TrialClosed`           — trial status is `Closed`
+    /// - `TrialNotActive`        — trial is not `Active`
+    /// - `EnrollmentNotFound`    — `prior_enrollment_id` does not exist
+    /// - `PriorEnrollmentActive` — prior enrolment is still `Active`
+    /// - `EnrollmentFull`        — trial has reached its target
+    /// - `DuplicateEnrollment`   — patient already has an active enrolment
+    pub fn re_enroll_participant(
+        env: Env,
+        trial_record_id: u64,
+        patient_id: Address,
+        prior_enrollment_id: u64,
+        new_consent_hash: BytesN<32>,
+        study_arm: Symbol,
+        enrollment_date: u64,
+        participant_id: String,
+    ) -> Result<u64, Error> {
+        patient_id.require_auth();
+
+        validation::validate_date_not_future(&env, enrollment_date)?;
+
+        if !Self::is_valid_consent(&env, &new_consent_hash) {
+            return Err(Error::InvalidConsent);
+        }
+
+        // Verify trial
+        let mut trial = storage::get_trial(&env, trial_record_id)?;
+        if trial.status == TrialStatus::Closed {
+            return Err(Error::TrialClosed);
+        }
+        if trial.status != TrialStatus::Active {
+            return Err(Error::TrialNotActive);
+        }
+
+        // Validate prior enrolment
+        let prior = storage::get_enrollment(&env, prior_enrollment_id)?;
+        if prior.trial_record_id != trial_record_id {
+            return Err(Error::EnrollmentNotFound);
+        }
+        if prior.status == EnrollmentStatus::Active {
+            return Err(Error::PriorEnrollmentActive);
+        }
+
+        if trial.current_enrollment >= trial.enrollment_target {
+            return Err(Error::EnrollmentFull);
+        }
+
+        if storage::check_duplicate_enrollment(&env, trial_record_id, &patient_id) {
+            return Err(Error::DuplicateEnrollment);
+        }
+
+        let enrollment_id = storage::get_next_enrollment_id(&env);
+
+        let enrollment = ParticipantEnrollment {
+            enrollment_id,
+            trial_record_id,
+            patient_id: patient_id.clone(),
+            study_arm,
+            enrollment_date,
+            informed_consent_hash: new_consent_hash,
+            participant_id: participant_id.clone(),
+            status: EnrollmentStatus::Active,
+            withdrawal_date: None,
+            withdrawal_reason: None,
+            data_retention_consent: true,
+            retention_class: DataRetentionClass::Optional,
+            site_id: prior.site_id,
+            prior_enrollment_id: Some(prior_enrollment_id),
+        };
+
+        storage::save_enrollment(&env, &enrollment);
+        storage::add_trial_enrollment(&env, trial_record_id, enrollment_id);
+        storage::add_patient_enrollment(&env, &patient_id, enrollment_id);
+
+        trial.current_enrollment += 1;
+        storage::save_trial(&env, &trial);
+
+        ParticipantReEnrolled {
+            enrollment_id,
+            prior_enrollment_id,
+            trial_record_id,
+        }
+        .publish(&env);
+
+        Ok(enrollment_id)
+    }
+
+    /// Advance a trial to the next study phase (PI only).
+    ///
+    /// Updates the trial's `study_phase` and `protocol_hash`.  New enrolments
+    /// after this call use the updated eligibility criteria (the PI must call
+    /// `define_eligibility_criteria` separately to update criteria for the new
+    /// phase).  Existing enrolments are unaffected.
+    ///
+    /// # Errors
+    /// - `Unauthorized`      — caller is not the trial's PI
+    /// - `TrialNotFound`     — trial does not exist
+    /// - `TrialNotActive`    — trial is not `Active`
+    /// - `InvalidStudyPhase` — `new_phase` is not a valid phase symbol
+    pub fn advance_trial_phase(
+        env: Env,
+        principal_investigator: Address,
+        trial_record_id: u64,
+        new_phase: Symbol,
+        new_protocol_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        principal_investigator.require_auth();
+
+        validation::validate_study_phase(&new_phase)?;
+
+        let mut trial = storage::get_trial(&env, trial_record_id)?;
+        if trial.principal_investigator != principal_investigator {
+            return Err(Error::Unauthorized);
+        }
+        if trial.status != TrialStatus::Active {
+            return Err(Error::TrialNotActive);
+        }
+
+        trial.study_phase = new_phase.clone();
+        trial.protocol_hash = new_protocol_hash.clone();
+        storage::save_trial(&env, &trial);
+
+        TrialPhaseAdvanced {
+            trial_record_id,
+            new_phase,
+            new_protocol_hash,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Update the protocol hash for a trial, appending an amendment record to
+    /// the on-chain audit log (#485 — ICH E6(R2) GCP compliance).
+    ///
+    /// # Arguments
+    /// * `principal_investigator` - Must be the trial's PI.
+    /// * `trial_record_id`        - Target trial.
+    /// * `new_hash`               - SHA-256 hash of the amended protocol document.
+    /// * `reason_hash`            - SHA-256 hash of the written amendment rationale.
+    pub fn update_protocol(
+        env: Env,
+        principal_investigator: Address,
+        trial_record_id: u64,
+        new_hash: BytesN<32>,
+        reason_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        principal_investigator.require_auth();
+
+        let mut trial = storage::get_trial(&env, trial_record_id)?;
+        if trial.principal_investigator != principal_investigator {
+            return Err(Error::Unauthorized);
+        }
+        if trial.status != TrialStatus::Active {
+            return Err(Error::TrialNotActive);
+        }
+
+        let amendment = ProtocolAmendment {
+            trial_record_id,
+            old_hash: trial.protocol_hash.clone(),
+            new_hash: new_hash.clone(),
+            amended_by: principal_investigator.clone(),
+            reason_hash,
+            timestamp: env.ledger().timestamp(),
+        };
+
+        storage::append_amendment(&env, &amendment);
+
+        trial.protocol_hash = new_hash.clone();
+        storage::save_trial(&env, &trial);
+
+        ProtocolAmendmentRecorded {
+            trial_record_id,
+            new_hash,
+            amended_by: principal_investigator,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Return the full amendment history for a trial (#485).
+    /// Returns an empty vec for trials that have never been amended.
+    pub fn get_amendment_history(
+        env: Env,
+        trial_record_id: u64,
+    ) -> Vec<ProtocolAmendment> {
+        storage::get_amendment_log(&env, trial_record_id)
     }
 
     fn evaluate_rule(

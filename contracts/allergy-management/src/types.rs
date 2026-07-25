@@ -80,6 +80,7 @@ pub enum DataKey {
     Allergy(u64),
     PatientAllergies(Address),
     AccessControl(Address, Address),  // (patient, provider)
+    GrantedProviders(Address),        // (patient) -> Vec<Address>
     CrossSensitivity(String, String), // (allergen1, allergen2)
     PatientRegistry,
     ProviderRegistry,

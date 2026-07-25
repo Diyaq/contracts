@@ -1,5 +1,29 @@
 #![no_std]
-#![allow(deprecated)]
+
+//! # Patient Registry Contract
+//!
+//! Maintains central patient registry with demographic data, encrypted contact information,
+//! incident tracking, and pagination support for patient directory management.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Patient authorization for registration. Provider access to
+//! patient directory restricted to network participants. Patient consent for provider queries.
+//! Encrypted contact information prevents unauthorized disclosure. Registry lookup authorization
+//! enforced per query.
+//!
+//! **Audit Controls:** Patient registration events logged with identity. Patient profile update
+//! events tracked. Deregistration events recorded. Incident reports linked to patient records.
+//! Correlation IDs enable multi-contract incident tracking. Access audit trail via pagination
+//! query logs.
+//!
+//! **Data Retention Policy:** Patient demographic data retained indefinitely. Contact information
+//! encrypted and persisted. Deregistration marks patient inactive without full deletion. Incident
+//! records retained for audit trail. Historical data preserved for continuity of care.
+//!
+//! **Encryption/Integrity:** EncryptedEnvelopeRef for contact information with content hashing.
+//! PolicyMetadata enforces encryption requirements. Nonzero address validation. Hash validation
+//! ensures contact data integrity. Pagination queries validated.
 
 use shared::pagination::PageResult;
 
@@ -159,6 +183,8 @@ pub enum DataKey {
     MerkleRoot(Address),
     /// Optional provider-registry contract address for cross-contract verification.
     ProviderRegistry,
+    /// Per-caller nonce for replay attack protection: (caller) -> u64
+    CallerNonce(Address),
 }
 
 /// --------------------
@@ -291,6 +317,9 @@ pub enum ContractError {
     NoHistoryFound = 26,
     InvalidAddress = 27,
     ProviderNotRegistered = 28,
+    /// A Vec parameter or accumulator exceeds its maximum allowed length.
+    InputTooLarge = 29,
+    StaleNonce = 30,
 }
 
 pub fn validate_cid(cid: &Bytes) -> Result<(), ContractError> {
@@ -471,6 +500,9 @@ pub const MAX_PAGE_SIZE: u32 = 50;
 
 /// Maximum number of entries allowed in a single batch registration call.
 pub const MAX_BATCH_SIZE: u32 = 50;
+
+/// Maximum number of authorized doctors a single patient may have.
+pub const MAX_AUTHORIZED_DOCTORS: u32 = 50;
 
 /// Input entry for `batch_register_patients`.
 #[contracttype]
@@ -1313,6 +1345,9 @@ impl MedicalRegistry {
             .unwrap_or(Map::new(&env));
 
         if !map.contains_key(doctor.clone()) {
+            if map.len() >= MAX_AUTHORIZED_DOCTORS {
+                return Err(ContractError::InputTooLarge);
+            }
             let total_access_grants: u64 = env
                 .storage()
                 .instance()
@@ -2770,6 +2805,36 @@ impl MedicalRegistry {
         for key in keys.iter() {
             extend_for_retention_class(env, key, &class);
         }
+    }
+
+    /// Verify and increment caller's nonce for cross-contract call protection.
+    /// Returns an error if the provided nonce is <= the last successful nonce.
+    fn verify_and_increment_nonce(
+        env: &Env,
+        caller: &Address,
+        provided_nonce: u64,
+    ) -> Result<(), ContractError> {
+        let nonce_key = DataKey::CallerNonce(caller.clone());
+        let last_nonce: u64 = env
+            .storage()
+            .persistent()
+            .get(&nonce_key)
+            .unwrap_or(0);
+
+        // Reject if provided nonce is not strictly greater than last successful nonce
+        if provided_nonce <= last_nonce {
+            return Err(ContractError::StaleNonce);
+        }
+
+        // Update nonce to prevent replay
+        env.storage().persistent().set(&nonce_key, &provided_nonce);
+        Ok(())
+    }
+
+    /// Get the current nonce for a caller.
+    pub fn get_caller_nonce(env: Env, caller: Address) -> u64 {
+        let nonce_key = DataKey::CallerNonce(caller);
+        env.storage().persistent().get(&nonce_key).unwrap_or(0)
     }
 }
 

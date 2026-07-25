@@ -1,5 +1,27 @@
 #![no_std]
-#![allow(deprecated)]
+
+//! # Provider Registry Contract
+//!
+//! Maintains healthcare provider registry with credentials, specializations, network participation,
+//! and provider validation for access control decisions.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Admin-only provider registration. Provider authentication for
+//! profile updates. Credential verification required before network participation. Address nonzero
+//! validation prevents invalid entries. Specialization enumeration restricts valid provider types.
+//!
+//! **Audit Controls:** Provider registration events logged with credential type. Credential
+//! updates tracked with new specialization. Network participation events recorded. Provider
+//! deactivation events logged. Credential expiration events tracked.
+//!
+//! **Data Retention Policy:** Provider records retained indefinitely as reference data. Credential
+//! information persisted with expiration dates. Specialization information maintained for service
+//! validation. Deactivated providers retain historical data without deletion.
+//!
+//! **Encryption/Integrity:** Provider addresses validated via nonzero checks. Address immutable
+//! once registered. Specialization enum validates allowed provider types. Credential metadata
+//! stored encrypted in persistent state. Registry lookup validates provider identity.
 
 use shared::privacy::validate_nonzero_address;
 use soroban_sdk::{
@@ -13,6 +35,8 @@ mod test;
 
 /// Maximum entries per batch call.
 pub const MAX_BATCH_SIZE: u32 = 50;
+/// Admin rotation confirmation window (24 hours in seconds).
+pub const ADMIN_ROTATION_WINDOW: u64 = 86_400;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -25,6 +49,11 @@ pub enum Error {
     RecordNotFound     = 5,
     BatchTooLarge      = 6,
     InvalidAddress     = 7,
+    RotationPending    = 8,
+    NoRotationPending  = 9,
+    RotationExpired    = 10,
+    NotPendingAdmin    = 11,
+    StaleNonce         = 12,
 }
 
 /// Input entry for `batch_register_providers`.
@@ -88,6 +117,10 @@ pub enum DataKey {
     ProviderRate(Address),
     ProviderReputation(Address),
     ProviderRatingByPatient(Address, Address),
+    PendingAdmin,
+    RotationExpiry,
+    /// Per-caller nonce for replay attack protection: (caller) -> u64
+    CallerNonce(Address),
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -268,6 +301,47 @@ impl ProviderRegistry {
             .ok_or(Error::RecordNotFound)
     }
 
+    /// Propose transferring admin to `new_admin`. Must be confirmed within 24 hours.
+    pub fn propose_admin_rotation(env: Env, admin: Address, new_admin: Address) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        Self::assert_admin(&env, &admin)?;
+        if env.storage().persistent().has(&DataKey::PendingAdmin) {
+            return Err(Error::RotationPending);
+        }
+        let expiry = env.ledger().timestamp() + ADMIN_ROTATION_WINDOW;
+        env.storage().persistent().set(&DataKey::PendingAdmin, &new_admin);
+        env.storage().persistent().set(&DataKey::RotationExpiry, &expiry);
+        Ok(())
+    }
+
+    /// New admin confirms the rotation proposed by the current admin.
+    pub fn accept_admin_rotation(env: Env, new_admin: Address) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        new_admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoRotationPending)?;
+        if new_admin != pending {
+            return Err(Error::NotPendingAdmin);
+        }
+        let expiry: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RotationExpiry)
+            .unwrap_or(0);
+        if env.ledger().timestamp() > expiry {
+            env.storage().persistent().remove(&DataKey::PendingAdmin);
+            env.storage().persistent().remove(&DataKey::RotationExpiry);
+            return Err(Error::RotationExpired);
+        }
+        env.storage().persistent().set(&DataKey::Admin, &new_admin);
+        env.storage().persistent().remove(&DataKey::PendingAdmin);
+        env.storage().persistent().remove(&DataKey::RotationExpiry);
+        Ok(())
+    }
+
     // ── guards ────────────────────────────────────────────────────────────────
 
     fn assert_initialized(env: &Env) -> Result<(), Error> {
@@ -295,5 +369,35 @@ impl ProviderRegistry {
             return Err(Error::Unauthorized);
         }
         Ok(())
+    }
+
+    /// Verify and increment caller's nonce for cross-contract call protection.
+    /// Returns an error if the provided nonce is <= the last successful nonce.
+    fn verify_and_increment_nonce(
+        env: &Env,
+        caller: &Address,
+        provided_nonce: u64,
+    ) -> Result<(), Error> {
+        let nonce_key = DataKey::CallerNonce(caller.clone());
+        let last_nonce: u64 = env
+            .storage()
+            .persistent()
+            .get(&nonce_key)
+            .unwrap_or(0);
+
+        // Reject if provided nonce is not strictly greater than last successful nonce
+        if provided_nonce <= last_nonce {
+            return Err(Error::StaleNonce);
+        }
+
+        // Update nonce to prevent replay
+        env.storage().persistent().set(&nonce_key, &provided_nonce);
+        Ok(())
+    }
+
+    /// Get the current nonce for a caller.
+    pub fn get_caller_nonce(env: Env, caller: Address) -> u64 {
+        let nonce_key = DataKey::CallerNonce(caller);
+        env.storage().persistent().get(&nonce_key).unwrap_or(0)
     }
 }

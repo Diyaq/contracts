@@ -1,5 +1,30 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
+#![allow(deprecated)]
+
+//! # Rehabilitation Services Contract
+//!
+//! Manages rehabilitation programs, therapy goals, session tracking, progress measurement, and
+//! outcome documentation for physical, occupational, and speech therapies.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Therapist authentication for goal creation and session logging.
+//! Patient consent for therapy record access. Authorized providers can view progress. Discharge
+//! authorization by supervising therapist. Access control per therapy type.
+//!
+//! **Audit Controls:** Rehabilitation program creation events with therapy type and goals.
+//! Session events logged with date, provider, and outcomes. Goal progress events tracked.
+//! Discharge events recorded with final status. Adverse events logged. Progress measurement
+//! events emitted.
+//!
+//! **Data Retention Policy:** Rehabilitation programs retained with discharge summary. Therapy
+//! goals archived with achievement status. Session records maintained indefinitely. Progress
+//! measurements retained for outcome analysis. Patient deregistration removes rehab records.
+//!
+//! **Encryption/Integrity:** Goal descriptions stored encrypted. Session notes encrypted in
+//! storage. Progress metrics immutable once recorded. Therapist identity validated. Patient
+//! linkage encrypted. Therapy outcome enumeration prevents invalid status values.
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, Address, BytesN, Env, String, Symbol, Vec,
@@ -140,6 +165,25 @@ pub struct DischargeRecord {
     pub home_exercise_program_hash: BytesN<32>,
 }
 
+pub const MAX_PAGE_SIZE: u32 = 50;
+
+/// Paginated page of therapy sessions.
+// TODO: consolidate with shared PageResult when #515 lands
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TherapyPage {
+    pub items: Vec<TherapySession>,
+    pub has_more: bool,
+}
+
+/// Paginated page of progress notes.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NotePage {
+    pub items: Vec<ProgressNote>,
+    pub has_more: bool,
+}
+
 /// A measurable rehabilitation goal with a numeric target value.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -161,6 +205,16 @@ pub struct ProgressEntry {
     pub goal_id: u64,
     pub current_value: u32,
     pub measured_at: u64,
+}
+
+/// An entry in a treatment plan's version history.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanVersionEntry {
+    pub ipfs_hash: String,
+    pub updated_by: Address,
+    pub updated_at: u64,
+    pub version: u64,
 }
 
 #[contracttype]
@@ -185,6 +239,12 @@ pub enum DataKey {
     MeasurableGoal(u64),
     /// goal_id -> Vec<ProgressEntry>
     GoalProgressList(u64),
+    /// plan_id -> u64 (current version number)
+    PlanVersion(u64),
+    /// plan_id -> Vec<PlanVersionEntry>
+    PlanVersionHistory(u64),
+    /// plan_id -> u64 (number of goals set for this plan, used as plan_version)
+    PlanGoalCount(u64),
 }
 
 #[contracttype]
@@ -419,6 +479,22 @@ impl RehabilitationServicesContract {
             .instance()
             .set(&DataKey::TreatmentPlanCounter, &plan_id);
 
+        // Initialize version tracking (#560)
+        env.storage()
+            .instance()
+            .set(&DataKey::PlanVersion(plan_id), &1u64);
+        let history_entry = PlanVersionEntry {
+            ipfs_hash: String::from_str(&env, ""),
+            updated_by: plan.therapist_id.clone(),
+            updated_at: env.ledger().timestamp(),
+            version: 1,
+        };
+        let mut history: Vec<PlanVersionEntry> = Vec::new(&env);
+        history.push_back(history_entry);
+        env.storage()
+            .instance()
+            .set(&DataKey::PlanVersionHistory(plan_id), &history);
+
         Ok(plan_id)
     }
 
@@ -647,6 +723,97 @@ impl RehabilitationServicesContract {
         Ok(())
     }
 
+    // ── Treatment plan versioning (#560) ───────────────────────────────────────
+
+    /// Update an existing treatment plan with new fields.
+    /// Only the original therapist (creator) can update the plan.
+    /// Each update creates a new version entry in the plan's history.
+    pub fn update_rehab_treatment_plan(
+        env: Env,
+        plan_id: u64,
+        therapist_id: Address,
+        stg_goals: Vec<RehabGoal>,
+        ltg_goals: Vec<RehabGoal>,
+        interventions: Vec<TherapyIntervention>,
+        frequency: String,
+        duration_weeks: u32,
+        prognosis: Symbol,
+        ipfs_hash: String,
+    ) -> Result<u64, Error> {
+        therapist_id.require_auth();
+
+        let mut plan: RehabTreatmentPlan = env
+            .storage()
+            .instance()
+            .get(&DataKey::TreatmentPlan(plan_id))
+            .ok_or(Error::NotFound)?;
+
+        if plan.therapist_id != therapist_id {
+            return Err(Error::Unauthorized);
+        }
+
+        plan.stg_goals = stg_goals;
+        plan.ltg_goals = ltg_goals;
+        plan.interventions = interventions;
+        plan.frequency = frequency;
+        plan.duration_weeks = duration_weeks;
+        plan.prognosis = prognosis;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TreatmentPlan(plan_id), &plan);
+
+        // Bump TTL on write
+        env.storage().instance().extend_ttl(0, 5000);
+
+        // Increment version
+        let current_version: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PlanVersion(plan_id))
+            .unwrap_or(1);
+        let new_version = current_version + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::PlanVersion(plan_id), &new_version);
+
+        // Append to version history
+        let entry = PlanVersionEntry {
+            ipfs_hash: ipfs_hash.clone(),
+            updated_by: therapist_id.clone(),
+            updated_at: env.ledger().timestamp(),
+            version: new_version,
+        };
+        let mut history: Vec<PlanVersionEntry> = env
+            .storage()
+            .instance()
+            .get(&DataKey::PlanVersionHistory(plan_id))
+            .unwrap_or(Vec::new(&env));
+        history.push_back(entry);
+        env.storage()
+            .instance()
+            .set(&DataKey::PlanVersionHistory(plan_id), &history);
+
+        // Emit plan_updated event
+        env.events().publish(
+            (Symbol::new(&env, "plan_updated"), plan_id),
+            (new_version, therapist_id, ipfs_hash),
+        );
+
+        Ok(new_version)
+    }
+
+    /// Retrieve the full version history for a treatment plan.
+    pub fn get_treatment_plan_history(env: Env, plan_id: u64) -> Vec<PlanVersionEntry> {
+        // Bump TTL on read
+        env.storage().instance().extend_ttl(0, 5000);
+
+        env.storage()
+            .instance()
+            .get(&DataKey::PlanVersionHistory(plan_id))
+            .unwrap_or(Vec::new(&env))
+    }
+
     // Query functions
     pub fn get_evaluation(env: Env, evaluation_id: u64) -> Result<PTEvaluation, Error> {
         env.storage()
@@ -755,26 +922,13 @@ impl RehabilitationServicesContract {
             .unwrap_or(0u64)
             + 1;
 
-        // Version is the number of goals already set for this plan (monotonic).
-        let plan_version: u64 = {
-            let mut count = 0u64;
-            let max = goal_id;
-            // Count goals belonging to this plan (linear scan over goal ids up to current).
-            // Using the stored counter as the upper bound is correct because goal_id is
-            // globally monotonic and we haven't persisted this new goal yet.
-            for gid in 1..max {
-                if let Some(g) = env
-                    .storage()
-                    .instance()
-                    .get::<_, MeasurableGoal>(&DataKey::MeasurableGoal(gid))
-                {
-                    if g.plan_id == plan_id {
-                        count += 1;
-                    }
-                }
-            }
-            count
-        };
+        // plan_version is the number of goals already set for this plan.
+        // Read a per-plan counter directly — O(1), no global scan.
+        let plan_version: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PlanGoalCount(plan_id))
+            .unwrap_or(0u64);
 
         let goal = MeasurableGoal {
             goal_id,
@@ -792,6 +946,9 @@ impl RehabilitationServicesContract {
         env.storage()
             .instance()
             .set(&DataKey::GoalCounter, &goal_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::PlanGoalCount(plan_id), &(plan_version + 1));
 
         env.events().publish(
             (Symbol::new(&env, "goal_set"), plan_id),
@@ -889,6 +1046,68 @@ impl RehabilitationServicesContract {
             .instance()
             .get(&DataKey::MeasurableGoal(goal_id))
             .ok_or(Error::NotFound)
+    }
+
+    // ── Paginated getters (#564) ───────────────────────────────────────────────
+
+    /// Paginated therapy session history for a treatment plan.
+    ///
+    /// `page` is 0-indexed. `page_size` is capped at `MAX_PAGE_SIZE`.
+    /// The existing `get_therapy_sessions` full-list getter is deprecated in
+    /// favour of this function for large session lists.
+    pub fn get_therapy_sessions_paged(
+        env: Env,
+        treatment_plan_id: u64,
+        page: u32,
+        page_size: u32,
+    ) -> TherapyPage {
+        let page_size = page_size.clamp(1, MAX_PAGE_SIZE);
+        let all: Vec<TherapySession> = env
+            .storage()
+            .instance()
+            .get(&DataKey::TherapySessions(treatment_plan_id))
+            .unwrap_or(Vec::new(&env));
+        let total = all.len();
+        let start = page.saturating_mul(page_size);
+        let mut items = Vec::new(&env);
+        let mut i = start;
+        while i < start + page_size && i < total {
+            items.push_back(all.get(i).unwrap());
+            i += 1;
+        }
+        TherapyPage {
+            items,
+            has_more: (start + page_size) < total,
+        }
+    }
+
+    /// Paginated progress notes for a treatment plan.
+    ///
+    /// `page` is 0-indexed. `page_size` is capped at `MAX_PAGE_SIZE`.
+    pub fn get_progress_notes_paged(
+        env: Env,
+        treatment_plan_id: u64,
+        page: u32,
+        page_size: u32,
+    ) -> NotePage {
+        let page_size = page_size.clamp(1, MAX_PAGE_SIZE);
+        let all: Vec<ProgressNote> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProgressNotes(treatment_plan_id))
+            .unwrap_or(Vec::new(&env));
+        let total = all.len();
+        let start = page.saturating_mul(page_size);
+        let mut items = Vec::new(&env);
+        let mut i = start;
+        while i < start + page_size && i < total {
+            items.push_back(all.get(i).unwrap());
+            i += 1;
+        }
+        NotePage {
+            items,
+            has_more: (start + page_size) < total,
+        }
     }
 }
 

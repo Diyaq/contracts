@@ -833,12 +833,8 @@ fn test_record_progress_achieves_goal() {
     let client = RehabilitationServicesContractClient::new(&env, &contract_id);
 
     let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
-    let goal_id = client.set_rehabilitation_goal(
-        &plan_id,
-        &Symbol::new(&env, "pain_scale"),
-        &3u32,
-        &2000u64,
-    );
+    let goal_id =
+        client.set_rehabilitation_goal(&plan_id, &Symbol::new(&env, "pain_scale"), &3u32, &2000u64);
 
     // Pain scale — lower is better but we track as "has reached target"
     client.record_progress(&plan_id, &goal_id, &5u32, &1400u64);
@@ -861,12 +857,8 @@ fn test_goal_progress_time_series_queryable() {
     let client = RehabilitationServicesContractClient::new(&env, &contract_id);
 
     let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
-    let goal_id = client.set_rehabilitation_goal(
-        &plan_id,
-        &Symbol::new(&env, "fim"),
-        &100u32,
-        &3000u64,
-    );
+    let goal_id =
+        client.set_rehabilitation_goal(&plan_id, &Symbol::new(&env, "fim"), &100u32, &3000u64);
 
     for i in 0..5u32 {
         client.record_progress(&plan_id, &goal_id, &(50 + i * 10), &(1000 + i as u64 * 100));
@@ -898,4 +890,171 @@ fn test_goal_progress_wrong_plan_returns_empty() {
     // Query with wrong plan_id → empty
     let progress = client.get_goal_progress(&(plan_id + 99), &goal_id);
     assert_eq!(progress.len(), 0);
+}
+
+// ── Paginated therapy sessions (#564) ────────────────────────────────────────
+
+fn add_sessions(
+    env: &Env,
+    client: &RehabilitationServicesContractClient,
+    plan_id: u64,
+    count: u32,
+) {
+    let intervention = TherapyIntervention {
+        intervention_type: Symbol::new(env, "exercise"),
+        description: String::from_str(env, "Exercise"),
+        sets: Some(3),
+        reps: Some(10),
+        duration: None,
+        resistance: None,
+    };
+    for i in 0..count {
+        client.document_therapy_session(
+            &plan_id,
+            &(1000u64 + i as u64),
+            &Vec::from_array(env, [intervention.clone()]),
+            &30u32,
+            &String::from_str(env, "Good"),
+            &None::<String>,
+        );
+    }
+}
+
+#[test]
+fn test_get_therapy_sessions_paged_first_page() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    add_sessions(&env, &client, plan_id, 7);
+
+    let page = client.get_therapy_sessions_paged(&plan_id, &0u32, &3u32);
+    assert_eq!(page.items.len(), 3);
+    assert!(page.has_more);
+}
+
+#[test]
+fn test_get_therapy_sessions_paged_last_page() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    add_sessions(&env, &client, plan_id, 7);
+
+    let page = client.get_therapy_sessions_paged(&plan_id, &2u32, &3u32);
+    assert_eq!(page.items.len(), 1); // 7 items, pages of 3: [0..3), [3..6), [6..7)
+    assert!(!page.has_more);
+}
+
+#[test]
+fn test_get_therapy_sessions_paged_empty() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    let page = client.get_therapy_sessions_paged(&plan_id, &0u32, &10u32);
+    assert_eq!(page.items.len(), 0);
+    assert!(!page.has_more);
+}
+
+#[test]
+fn test_get_therapy_sessions_paged_beyond_range() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    add_sessions(&env, &client, plan_id, 3);
+
+    let page = client.get_therapy_sessions_paged(&plan_id, &99u32, &10u32);
+    assert_eq!(page.items.len(), 0);
+    assert!(!page.has_more);
+}
+
+#[test]
+fn test_get_therapy_sessions_paged_page_size_clamped() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    add_sessions(&env, &client, plan_id, 5);
+
+    // page_size > MAX_PAGE_SIZE (50) should be clamped — returns at most 50
+    let page = client.get_therapy_sessions_paged(&plan_id, &0u32, &200u32);
+    assert_eq!(page.items.len(), 5); // only 5 sessions, all fit in one page
+    assert!(!page.has_more);
+}
+
+#[test]
+fn test_get_progress_notes_paged() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    for i in 0u64..4 {
+        client.document_progress_note(
+            &plan_id,
+            &(2000u64 + i),
+            &String::from_str(&env, "Feels better"),
+            &Vec::from_array(&env, [String::from_str(&env, "Improved ROM")]),
+            &String::from_str(&env, "Progressing"),
+            &Vec::new(&env),
+        );
+    }
+
+    let page = client.get_progress_notes_paged(&plan_id, &0u32, &3u32);
+    assert_eq!(page.items.len(), 3);
+    assert!(page.has_more);
+
+    let page2 = client.get_progress_notes_paged(&plan_id, &1u32, &3u32);
+    assert_eq!(page2.items.len(), 1);
+    assert!(!page2.has_more);
+}
+
+#[test]
+fn test_plan_version_is_per_plan_not_global() {
+    // Goals created on plan_b must not inflate plan_version on plan_a.
+    let env = Env::default();
+    env.mock_all_auths();
+    let patient = Address::generate(&env);
+    let therapist = Address::generate(&env);
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+
+    let (_, plan_a) = create_plan(&env, &client, &patient, &therapist);
+    let (_, plan_b) = create_plan(&env, &client, &patient, &therapist);
+
+    // Add several goals to plan_b first.
+    for _ in 0..5 {
+        client.set_rehabilitation_goal(&plan_b, &Symbol::new(&env, "strength"), &100u32, &9000u64);
+    }
+
+    // First goal on plan_a should have plan_version == 0 regardless of plan_b's goals.
+    let g1 = client.set_rehabilitation_goal(
+        &plan_a,
+        &Symbol::new(&env, "range_of_motion"),
+        &120u32,
+        &9000u64,
+    );
+    assert_eq!(client.get_measurable_goal(&g1).plan_version, 0);
+
+    // Second goal on plan_a should have plan_version == 1.
+    let g2 = client.set_rehabilitation_goal(
+        &plan_a,
+        &Symbol::new(&env, "range_of_motion"),
+        &130u32,
+        &9001u64,
+    );
+    assert_eq!(client.get_measurable_goal(&g2).plan_version, 1);
 }

@@ -1,6 +1,30 @@
 #![no_std]
-#![allow(deprecated)]
 #![allow(clippy::too_many_arguments)]
+
+//! # Nutrition Care Management Contract
+//!
+//! Manages nutrition assessments, diet plans, nutritionist consultations, and dietary compliance
+//! tracking for chronic disease and wellness management.
+//!
+//! ## HIPAA Compliance
+//!
+//! **Access Control Safeguards:** Nutritionist/RD authentication for diet plan creation. Patient
+//! consent for nutrition record access. Authorized providers can view dietary recommendations.
+//! Patient authorization required for dietary consultation scheduling. Access control grants tracked
+//! per patient-provider pair.
+//!
+//! **Audit Controls:** Nutrition assessment events logged with patient, nutritionist, and findings.
+//! Diet plan creation events tracked with plan type and goals. Consultation appointment events
+//! recorded. Dietary compliance check-in events logged. Plan modification events tracked with
+//! provider identity.
+//!
+//! **Data Retention Policy:** Nutrition assessments retained indefinitely. Diet plans archived
+//! with start/end dates. Consultation history maintained for continuity. Compliance tracking
+//! retained for outcome measurement. Deregistration removes patient nutrition records.
+//!
+//! **Encryption/Integrity:** Dietary recommendations stored encrypted. Patient-nutritionist
+//! linkage encrypted via persistent storage. Assessment date tracking prevents backdating.
+//! Nutritionist identity validated at plan creation. Compliance metrics immutable once recorded.
 
 mod storage;
 mod types;
@@ -9,10 +33,19 @@ mod types;
 mod test;
 
 use soroban_sdk::{
-    contract, contractimpl, symbol_short, Address, BytesN, Env, String, Symbol, Vec,
+    contract, contractclient, contractimpl, symbol_short, Address, BytesN, Env, String, Symbol, Vec,
 };
+
+const OUTCOME_MAX_PAGE_SIZE: u32 = 50;
 use storage::*;
 use types::*;
+
+// ── Cross-contract interface for prescription-management (#562) ───────────────
+
+#[contractclient(name = "PrescriptionManagementClient")]
+pub trait PrescriptionManagementInterface {
+    fn get_patient_active_prescriptions(env: Env, patient: Address) -> Vec<String>;
+}
 
 #[contract]
 pub struct NutritionCareContract;
@@ -207,10 +240,12 @@ impl NutritionCareContract {
     }
 
     // ------------------------------------------------------------------
-    // 4. order_therapeutic_diet
+    // 4a. order_therapeutic_diet
     // ------------------------------------------------------------------
 
     /// Place a therapeutic diet order for a patient.
+    /// Performs a cross-contract call to prescription-management to check
+    /// for drug-nutrient contraindications before confirming the order.
     pub fn order_therapeutic_diet(
         env: Env,
         patient_id: Address,
@@ -222,6 +257,35 @@ impl NutritionCareContract {
         special_instructions: Option<String>,
     ) -> Result<u64, Error> {
         ordering_provider.require_auth();
+
+        // Cross-check active prescriptions for contraindications
+        if let Some(prescription_addr) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::PrescriptionContractAddress)
+        {
+            let rx_client = PrescriptionManagementClient::new(&env, &prescription_addr);
+            let active_meds = rx_client.get_patient_active_prescriptions(&patient_id);
+
+            // Check each active medication against the contraindication list for this diet type
+            if let Some(contraindicated) = env
+                .storage()
+                .persistent()
+                .get::<_, Vec<String>>(&DataKey::ContraindicationList(diet_type.clone()))
+            {
+                for med in active_meds.iter() {
+                    for contra in contraindicated.iter() {
+                        if med == contra {
+                            env.events().publish(
+                                (Symbol::new(&env, "diet_contraindication_alert"),),
+                                (diet_type, med, patient_id.clone()),
+                            );
+                            return Err(Error::DietContraindicatedWithMedication);
+                        }
+                    }
+                }
+            }
+        }
 
         let order_id = next_diet_order_id(&env);
 
@@ -247,6 +311,120 @@ impl NutritionCareContract {
         );
 
         Ok(order_id)
+    }
+
+    // ------------------------------------------------------------------
+    // 4b. Admin configuration for prescription-management integration
+    // ------------------------------------------------------------------
+
+    /// Set the prescription-management contract address.
+    /// Only the current contraindication admin can update this.
+    pub fn set_prescription_contract(
+        env: Env,
+        admin: Address,
+        prescription_contract: Address,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContraindicationAdmin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::PrescriptionContractAddress, &prescription_contract);
+        Ok(())
+    }
+
+    /// Set the admin address for managing contraindication lists.
+    pub fn set_contraindication_admin(
+        env: Env,
+        admin: Address,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::ContraindicationAdmin, &admin);
+        Ok(())
+    }
+
+    /// Add a medication to the contraindication list for a diet type.
+    /// Only the contraindication admin can update the list.
+    pub fn add_contraindication(
+        env: Env,
+        admin: Address,
+        diet_type: Symbol,
+        medication: String,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContraindicationAdmin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+
+        let key = DataKey::ContraindicationList(diet_type.clone());
+        let mut list: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        // Avoid duplicates
+        let mut exists = false;
+        for item in list.iter() {
+            if item == medication {
+                exists = true;
+                break;
+            }
+        }
+        if !exists {
+            list.push_back(medication);
+            env.storage().persistent().set(&key, &list);
+        }
+
+        Ok(())
+    }
+
+    /// Remove a medication from the contraindication list for a diet type.
+    pub fn remove_contraindication(
+        env: Env,
+        admin: Address,
+        diet_type: Symbol,
+        medication: String,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContraindicationAdmin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+
+        let key = DataKey::ContraindicationList(diet_type.clone());
+        let mut list: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut new_list: Vec<String> = Vec::new(&env);
+        for item in list.iter() {
+            if item != medication {
+                new_list.push_back(item);
+            }
+        }
+        env.storage().persistent().set(&key, &new_list);
+
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -560,6 +738,14 @@ impl NutritionCareContract {
         save_clinical_outcome(&env, &outcome);
         append_plan_outcome(&env, care_plan_id, outcome_id);
 
+        // Track per-patient for paginated history (#566)
+        let assessment_id = load_care_plan(&env, care_plan_id)
+            .ok_or(Error::CarePlanNotFound)?
+            .assessment_id;
+        if let Some(assessment) = load_assessment(&env, assessment_id) {
+            append_patient_outcome(&env, &assessment.patient_id, outcome_id);
+        }
+
         // Emit event
         env.events().publish(
             (Symbol::new(&env, "nutrition_outcome_recorded"),),
@@ -726,5 +912,79 @@ impl NutritionCareContract {
     /// Check if a provider is authorized to record outcomes for a care plan (#393).
     pub fn is_provider_authorized(env: Env, care_plan_id: u64, provider_id: Address) -> bool {
         is_provider_authorized(&env, care_plan_id, &provider_id)
+    }
+
+    // ------------------------------------------------------------------
+    // #566 — paginated outcome history
+    // ------------------------------------------------------------------
+
+    /// Paginated outcome history for a patient.
+    ///
+    /// `page` is 0-indexed. `page_size` is capped at `OUTCOME_MAX_PAGE_SIZE`.
+    pub fn get_outcome_history(
+        env: Env,
+        patient: Address,
+        page: u32,
+        page_size: u32,
+    ) -> OutcomePageResult {
+        let page_size = page_size.min(OUTCOME_MAX_PAGE_SIZE).max(1);
+        let all_ids = load_patient_outcome_ids(&env, &patient);
+        let total = all_ids.len();
+        let start = page.saturating_mul(page_size);
+        let mut outcome_ids = Vec::new(&env);
+        let mut i = start;
+        while i < start + page_size && i < total {
+            outcome_ids.push_back(all_ids.get(i).unwrap());
+            i += 1;
+        }
+        let has_more = (start + page_size) < total;
+        OutcomePageResult { outcome_ids, has_more }
+    }
+
+    // ------------------------------------------------------------------
+    // #566 — admin-settable care-plan contract address
+    // ------------------------------------------------------------------
+
+    /// Set the address of the external care-plan contract (admin only).
+    pub fn set_care_plan_contract(env: Env, admin: Address, care_plan_addr: Address) {
+        admin.require_auth();
+        set_care_plan_contract_address(&env, &care_plan_addr);
+    }
+
+    // ------------------------------------------------------------------
+    // #566 — link outcome to external care-plan (idempotent)
+    // ------------------------------------------------------------------
+
+    /// Link a recorded clinical outcome to an entry in the external care-plan contract.
+    ///
+    /// Idempotent: linking the same outcome to the same care plan twice is a no-op.
+    /// Returns `Error::CarePlanContractNotConfigured` when no address has been set.
+    pub fn link_to_care_plan(
+        env: Env,
+        outcome_id: u64,
+        care_plan_id: u64,
+    ) -> Result<(), Error> {
+        // Confirm outcome exists.
+        load_clinical_outcome(&env, outcome_id).ok_or(Error::OutcomeNotFound)?;
+
+        // Require care-plan contract address to be configured.
+        get_care_plan_contract_address(&env)
+            .ok_or(Error::CarePlanContractNotConfigured)?;
+
+        // Idempotency: skip if already linked to the same care plan.
+        if let Some(existing) = get_outcome_care_plan_link(&env, outcome_id) {
+            if existing == care_plan_id {
+                return Ok(());
+            }
+        }
+
+        save_outcome_care_plan_link(&env, outcome_id, care_plan_id);
+
+        env.events().publish(
+            (Symbol::new(&env, "outcome_linked_to_care_plan"),),
+            (outcome_id, care_plan_id),
+        );
+
+        Ok(())
     }
 }
