@@ -277,14 +277,16 @@ impl EmergencyMedicalInfo {
     }
 
     /// Record DNR (Do Not Resuscitate) order
+    /// Requires explicit authorization from both the provider and the patient
     pub fn record_dnr_order(
         env: Env,
         patient_id: Address,
         provider_id: Address,
         dnr_document_hash: BytesN<32>,
         effective_date: u64,
-    ) {
+    ) -> Result<(), Error> {
         provider_id.require_auth();
+        patient_id.require_auth();
 
         let dnr = DNROrder {
             provider_id: provider_id.clone(),
@@ -306,6 +308,38 @@ impl EmergencyMedicalInfo {
             profile.dnr_status = true;
             env.storage().persistent().set(&profile_key, &profile);
         }
+
+        env.events().publish(
+            (Symbol::new(&env, "dnr_recorded"), patient_id.clone()),
+            provider_id,
+        );
+
+        Ok(())
+    }
+
+    /// Revoke a DNR (Do Not Resuscitate) order
+    /// Requires explicit authorization from the patient
+    pub fn revoke_dnr_order(env: Env, patient_id: Address) -> Result<(), Error> {
+        patient_id.require_auth();
+
+        let dnr_key = DataKey::DNROrder(patient_id.clone());
+        env.storage().persistent().remove(&dnr_key);
+
+        // Update profile DNR status
+        let profile_key = DataKey::EmergencyProfile(patient_id.clone());
+        if let Some(mut profile) = env
+            .storage()
+            .persistent()
+            .get::<_, EmergencyProfile>(&profile_key)
+        {
+            profile.dnr_status = false;
+            env.storage().persistent().set(&profile_key, &profile);
+        }
+
+        env.events()
+            .publish((Symbol::new(&env, "dnr_revoked"), patient_id), ());
+
+        Ok(())
     }
 
     /// Get emergency information (fast read access)
