@@ -26,7 +26,7 @@
 
 use soroban_sdk::{
     contract, contractevent, contracterror, contractimpl, contracttype, Address, BytesN, Env,
-    String, Symbol,
+    String, Symbol, Vec,
 };
 use shared::{
     pagination::{self, PageResult, MAX_PAGE_SIZE},
@@ -93,6 +93,20 @@ pub struct FinalReport {
     pub submitted_at: u64,
 }
 
+/// A correction or addition appended to an already-locked final report
+/// (wrong laterality, missed finding, transcription error, etc.). The
+/// original `FinalReport` is never modified; addenda are appended to a
+/// separate history so the audit trail stays intact.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReportAddendum {
+    pub order_id: u64,
+    pub radiologist_id: Address,
+    pub addendum_hash: BytesN<32>,
+    pub reason: String,
+    pub submitted_at: u64,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PeerReview {
@@ -115,6 +129,8 @@ pub enum DataKey {
     DicomImages(u64),
     PreliminaryReport(u64),
     FinalReport(u64),
+    /// order_id -> Vec<ReportAddendum>, appended to after the final report is locked.
+    ReportAddenda(u64),
     PeerReview(u64),
     /// Paged order index per patient: (patient, page_num) → Vec<u64>
     PatientOrdersPage(Address, u32),
@@ -152,6 +168,8 @@ pub enum Error {
     InvalidStudyDate = 10,
     /// A required counter entry was missing from storage
     CounterUnavailable = 11,
+    /// An addendum was submitted for an order with no final report yet.
+    FinalReportNotFound = 12,
 }
 
 /// --------------------
@@ -189,6 +207,13 @@ pub struct PreliminaryReportSubmitted {
 pub struct FinalReportSubmitted {
     pub version: u32,
     pub order_id: u64,
+}
+
+#[contractevent]
+pub struct AddendumSubmitted {
+    pub version: u32,
+    pub order_id: u64,
+    pub radiologist_id: Address,
 }
 
 #[contractevent]
@@ -469,6 +494,59 @@ impl ImagingRadiology {
         Ok(())
     }
 
+    /// Submit a correction or addition to an already-locked final report.
+    /// The original `FinalReport` is left untouched; the addendum is appended
+    /// to that order's addendum history so the on-chain audit trail records
+    /// both the original report and every subsequent correction.
+    pub fn submit_report_addendum(
+        env: Env,
+        order_id: u64,
+        radiologist_id: Address,
+        addendum_hash: BytesN<32>,
+        reason: String,
+    ) -> Result<(), Error> {
+        radiologist_id.require_auth();
+
+        env.storage()
+            .persistent()
+            .get::<_, ImagingOrder>(&DataKey::ImagingOrder(order_id))
+            .ok_or(Error::OrderNotFound)?;
+
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::FinalReport(order_id))
+        {
+            return Err(Error::FinalReportNotFound);
+        }
+
+        let addenda_key = DataKey::ReportAddenda(order_id);
+        let mut addenda: Vec<ReportAddendum> = env
+            .storage()
+            .persistent()
+            .get(&addenda_key)
+            .unwrap_or(Vec::new(&env));
+
+        addenda.push_back(ReportAddendum {
+            order_id,
+            radiologist_id: radiologist_id.clone(),
+            addendum_hash,
+            reason,
+            submitted_at: env.ledger().timestamp(),
+        });
+
+        env.storage().persistent().set(&addenda_key, &addenda);
+
+        AddendumSubmitted {
+            version: shared::events::EVENT_VERSION,
+            order_id,
+            radiologist_id,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
     /// Request peer review
     pub fn request_peer_review(
         env: Env,
@@ -566,6 +644,21 @@ impl ImagingRadiology {
         Self::load_order_for_read(&env, order_id, &requester)?;
         let key = DataKey::FinalReport(order_id);
         Ok(env.storage().persistent().get(&key))
+    }
+
+    /// Get the addendum history for an order's final report
+    pub fn get_report_addenda(
+        env: Env,
+        order_id: u64,
+        requester: Address,
+    ) -> Result<Vec<ReportAddendum>, Error> {
+        Self::load_order_for_read(&env, order_id, &requester)?;
+        let key = DataKey::ReportAddenda(order_id);
+        Ok(env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env)))
     }
 
     /// Get peer review request
