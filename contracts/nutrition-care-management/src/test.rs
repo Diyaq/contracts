@@ -430,6 +430,7 @@ fn test_document_intervention_success() {
 
     client.document_nutrition_intervention(
         &care_plan_id,
+        &dietitian,
         &1_500_000u64,
         &symbol_short!("education"),
         &topics,
@@ -454,6 +455,7 @@ fn test_document_intervention_multiple_sessions() {
         let topics = Vec::new(&env);
         client.document_nutrition_intervention(
             &care_plan_id,
+            &dietitian,
             &1_500_000u64,
             &symbol_short!("counsel"),
             &topics,
@@ -468,12 +470,33 @@ fn test_document_intervention_multiple_sessions() {
 
 #[test]
 fn test_document_intervention_care_plan_not_found() {
-    let (env, _, _, _) = setup();
+    let (env, _, dietitian, _) = setup();
     let client = register(&env);
     let topics = Vec::new(&env);
 
     let result = client.try_document_nutrition_intervention(
         &999,
+        &dietitian,
+        &1_500_000u64,
+        &symbol_short!("education"),
+        &topics,
+        &30u32,
+        &symbol_short!("good"),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_document_intervention_rejects_unauthorized_dietitian() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+    let stranger = Address::generate(&env);
+    let topics = Vec::new(&env);
+
+    let result = client.try_document_nutrition_intervention(
+        &care_plan_id,
+        &stranger,
         &1_500_000u64,
         &symbol_short!("education"),
         &topics,
@@ -620,6 +643,7 @@ fn test_assess_malnutrition_risk_must_success() {
 
     client.assess_malnutrition_risk(
         &assessment_id,
+        &dietitian,
         &symbol_short!("must"),
         &3u32,
         &symbol_short!("high"),
@@ -638,6 +662,7 @@ fn test_assess_malnutrition_risk_nrs2002() {
 
     client.assess_malnutrition_risk(
         &assessment_id,
+        &dietitian,
         &symbol_short!("nrs2002"),
         &2u32,
         &symbol_short!("medium"),
@@ -655,6 +680,7 @@ fn test_assess_malnutrition_risk_mna() {
 
     client.assess_malnutrition_risk(
         &assessment_id,
+        &dietitian,
         &symbol_short!("mna"),
         &1u32,
         &symbol_short!("low"),
@@ -672,6 +698,7 @@ fn test_assess_malnutrition_invalid_tool() {
 
     let result = client.try_assess_malnutrition_risk(
         &assessment_id,
+        &dietitian,
         &symbol_short!("unknown"),
         &2u32,
         &symbol_short!("high"),
@@ -687,6 +714,7 @@ fn test_assess_malnutrition_invalid_risk_level() {
 
     let result = client.try_assess_malnutrition_risk(
         &assessment_id,
+        &dietitian,
         &symbol_short!("must"),
         &2u32,
         &symbol_short!("extreme"),
@@ -696,14 +724,32 @@ fn test_assess_malnutrition_invalid_risk_level() {
 
 #[test]
 fn test_assess_malnutrition_assessment_not_found() {
-    let (env, _, _, _) = setup();
+    let (env, _, dietitian, _) = setup();
     let client = register(&env);
 
     let result = client.try_assess_malnutrition_risk(
         &999,
+        &dietitian,
         &symbol_short!("mna"),
         &1u32,
         &symbol_short!("low"),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_assess_malnutrition_rejects_unauthorized_dietitian() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let assessment_id = create_assessment(&env, &client, &patient, &dietitian);
+    let stranger = Address::generate(&env);
+
+    let result = client.try_assess_malnutrition_risk(
+        &assessment_id,
+        &stranger,
+        &symbol_short!("must"),
+        &3u32,
+        &symbol_short!("high"),
     );
     assert!(result.is_err());
 }
@@ -789,6 +835,7 @@ fn test_evaluate_outcomes_success() {
 
     client.evaluate_nutrition_outcomes(
         &care_plan_id,
+        &dietitian,
         &2_000_000u64,
         &-200i64,
         &lab,
@@ -814,6 +861,7 @@ fn test_evaluate_outcomes_discontinue_care() {
 
     client.evaluate_nutrition_outcomes(
         &care_plan_id,
+        &dietitian,
         &2_000_000u64,
         &0i64,
         &lab,
@@ -827,13 +875,41 @@ fn test_evaluate_outcomes_discontinue_care() {
 
 #[test]
 fn test_evaluate_outcomes_care_plan_not_found() {
-    let (env, _, _, _) = setup();
+    let (env, _, dietitian, _) = setup();
     let client = register(&env);
     let lab = Vec::new(&env);
     let goals_met = Vec::new(&env);
 
-    let result =
-        client.try_evaluate_nutrition_outcomes(&999, &2_000_000u64, &0i64, &lab, &goals_met, &true);
+    let result = client.try_evaluate_nutrition_outcomes(
+        &999,
+        &dietitian,
+        &2_000_000u64,
+        &0i64,
+        &lab,
+        &goals_met,
+        &true,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_evaluate_outcomes_rejects_unauthorized_dietitian() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+    let stranger = Address::generate(&env);
+    let lab = Vec::new(&env);
+    let goals_met = Vec::new(&env);
+
+    let result = client.try_evaluate_nutrition_outcomes(
+        &care_plan_id,
+        &stranger,
+        &2_000_000u64,
+        &0i64,
+        &lab,
+        &goals_met,
+        &true,
+    );
     assert!(result.is_err());
 }
 
@@ -863,6 +939,7 @@ fn test_full_nutrition_care_workflow() {
     // Step 3: Malnutrition screening
     client.assess_malnutrition_risk(
         &assessment_id,
+        &dietitian,
         &symbol_short!("must"),
         &2u32,
         &symbol_short!("medium"),
@@ -889,6 +966,7 @@ fn test_full_nutrition_care_workflow() {
     topics.push_back(String::from_str(&env, "Meal planning"));
     client.document_nutrition_intervention(
         &care_plan_id,
+        &dietitian,
         &1_500_000u64,
         &symbol_short!("mealplan"),
         &topics,
@@ -938,6 +1016,7 @@ fn test_full_nutrition_care_workflow() {
 
     client.evaluate_nutrition_outcomes(
         &care_plan_id,
+        &dietitian,
         &2_000_000u64,
         &-80i64,
         &lab,
