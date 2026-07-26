@@ -92,8 +92,12 @@ impl CarePlanContract {
     ) -> Result<u64, Error> {
         provider_id.require_auth();
 
-        if load_care_plan(&env, care_plan_id).is_none() {
-            return Err(Error::CarePlanNotFound);
+        let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+        if matches!(
+            plan.status,
+            CarePlanStatus::Completed | CarePlanStatus::Discontinued
+        ) {
+            return Err(Error::CarePlanClosed);
         }
 
         let goal_id = next_goal_id(&env);
@@ -134,8 +138,12 @@ impl CarePlanContract {
     ) -> Result<u64, Error> {
         provider_id.require_auth();
 
-        if load_care_plan(&env, care_plan_id).is_none() {
-            return Err(Error::CarePlanNotFound);
+        let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+        if matches!(
+            plan.status,
+            CarePlanStatus::Completed | CarePlanStatus::Discontinued
+        ) {
+            return Err(Error::CarePlanClosed);
         }
 
         let intervention_id = next_intervention_id(&env);
@@ -202,6 +210,10 @@ impl CarePlanContract {
     }
 
     /// Mark a care goal as achieved.
+    ///
+    /// Allowed even if the parent care plan has since been completed or discontinued:
+    /// closing out a goal that was already on the plan reflects a real clinical outcome
+    /// and does not add new activity to a closed plan, unlike `add_care_goal`.
     pub fn mark_goal_achieved(
         env: Env,
         goal_id: u64,
@@ -245,8 +257,12 @@ impl CarePlanContract {
     ) -> Result<u64, Error> {
         reporter.require_auth();
 
-        if load_care_plan(&env, care_plan_id).is_none() {
-            return Err(Error::CarePlanNotFound);
+        let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+        if matches!(
+            plan.status,
+            CarePlanStatus::Completed | CarePlanStatus::Discontinued
+        ) {
+            return Err(Error::CarePlanClosed);
         }
 
         let barrier_id = next_barrier_id(&env);
@@ -276,6 +292,10 @@ impl CarePlanContract {
     }
 
     /// Resolve a barrier.
+    ///
+    /// Allowed even if the parent care plan has since been completed or discontinued, for
+    /// the same reason as `mark_goal_achieved`: it closes out existing state rather than
+    /// adding new activity to a closed plan.
     pub fn resolve_barrier(
         env: Env,
         barrier_id: u64,
@@ -316,8 +336,12 @@ impl CarePlanContract {
     ) -> Result<u64, Error> {
         provider_id.require_auth();
 
-        if load_care_plan(&env, care_plan_id).is_none() {
-            return Err(Error::CarePlanNotFound);
+        let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+        if matches!(
+            plan.status,
+            CarePlanStatus::Completed | CarePlanStatus::Discontinued
+        ) {
+            return Err(Error::CarePlanClosed);
         }
 
         let review_id = next_review_id(&env);

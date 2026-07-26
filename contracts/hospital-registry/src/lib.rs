@@ -36,6 +36,14 @@ pub const MAX_DEPARTMENTS: u32 = 200;
 pub const MAX_LOCATIONS: u32 = 50;
 /// Maximum number of equipment resources a hospital configuration may contain.
 pub const MAX_EQUIPMENT: u32 = 100;
+/// Maximum number of policies/procedures a hospital configuration may contain.
+pub const MAX_POLICIES: u32 = 100;
+/// Maximum number of alert settings a hospital configuration may contain.
+pub const MAX_ALERTS: u32 = 50;
+/// Maximum number of insurance providers a hospital configuration may contain.
+pub const MAX_INSURANCE_PROVIDERS: u32 = 100;
+/// Maximum number of emergency protocols a hospital configuration may contain.
+pub const MAX_EMERGENCY_PROTOCOLS: u32 = 50;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -478,6 +486,12 @@ impl HospitalRegistry {
         Self::assert_config_auth(&env, &wallet, &wallet)?;
         Self::assert_active_hospital(&env, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
+        if policies.is_empty() && !config.policies.is_empty() {
+            return Err(ContractError::EmptyFieldUpdate);
+        }
+        if policies.len() > MAX_POLICIES {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
         let old = config.clone();
         config.policies = policies;
         env.storage()
@@ -496,6 +510,12 @@ impl HospitalRegistry {
         Self::assert_config_auth(&env, &wallet, &wallet)?;
         Self::assert_active_hospital(&env, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
+        if alerts.is_empty() && !config.alerts.is_empty() {
+            return Err(ContractError::EmptyFieldUpdate);
+        }
+        if alerts.len() > MAX_ALERTS {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
         let old = config.clone();
         config.alerts = alerts;
         env.storage()
@@ -514,6 +534,12 @@ impl HospitalRegistry {
         Self::assert_config_auth(&env, &wallet, &wallet)?;
         Self::assert_active_hospital(&env, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
+        if insurance_providers.is_empty() && !config.insurance_providers.is_empty() {
+            return Err(ContractError::EmptyFieldUpdate);
+        }
+        if insurance_providers.len() > MAX_INSURANCE_PROVIDERS {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
         let old = config.clone();
         config.insurance_providers = insurance_providers;
         env.storage()
@@ -550,6 +576,12 @@ impl HospitalRegistry {
         Self::assert_config_auth(&env, &wallet, &wallet)?;
         Self::assert_active_hospital(&env, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
+        if protocols.is_empty() && !config.emergency_protocols.is_empty() {
+            return Err(ContractError::EmptyFieldUpdate);
+        }
+        if protocols.len() > MAX_EMERGENCY_PROTOCOLS {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
         let old = config.clone();
         config.emergency_protocols = protocols;
         env.storage()

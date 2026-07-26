@@ -8,6 +8,8 @@ pub enum DataKey {
     ImmunizationRecord(u64),
     AdverseEvents(u64),            // List of AdverseEvent
     PatientVaccineSeries(Address), // List of VaccineSeries
+    LotImmunizations(String),      // List of IDs (u64) administered from this lot
+    Regulator,                     // Address authorized for public-health/recall queries
 }
 
 #[contracterror]
@@ -17,6 +19,8 @@ pub enum Error {
     NotAuthorized = 1,
     RecordNotFound = 2,
     InvalidDoseNumber = 3,
+    AlreadyInitialized = 4,
+    NotInitialized = 5,
 }
 
 #[contracttype]
@@ -48,6 +52,7 @@ pub struct AdverseEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VaccineSeries {
     pub series_name: String,
+    pub cvx_code: String,
     pub doses_required: u32,
     pub schedule_hash: BytesN<32>,
 }

@@ -36,6 +36,17 @@ pub struct ImmunizationRegistry;
 
 #[contractimpl]
 impl ImmunizationRegistry {
+    /// Configure the regulator/public-health authority address allowed to run recall queries.
+    pub fn initialize(env: Env, regulator: Address) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::Regulator) {
+            return Err(Error::AlreadyInitialized);
+        }
+
+        regulator.require_auth();
+        env.storage().instance().set(&DataKey::Regulator, &regulator);
+        Ok(())
+    }
+
     pub fn record_immunization(env: Env, record: VaccineRecord) -> Result<u64, Error> {
         record.provider_id.require_auth();
 
@@ -64,7 +75,58 @@ impl ImmunizationRegistry {
             &patient_records,
         );
 
+        let mut lot_records: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LotImmunizations(record.lot_number.clone()))
+            .unwrap_or(Vec::new(&env));
+        lot_records.push_back(new_id);
+        env.storage().persistent().set(
+            &DataKey::LotImmunizations(record.lot_number.clone()),
+            &lot_records,
+        );
+
         Ok(new_id)
+    }
+
+    /// Return the distinct patients who received a dose from `lot_number`, for recall tracing.
+    /// Restricted to the configured regulator/public-health authority.
+    pub fn get_patients_by_lot(
+        env: Env,
+        lot_number: String,
+        requester: Address,
+    ) -> Result<Vec<Address>, Error> {
+        requester.require_auth();
+
+        let regulator: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Regulator)
+            .ok_or(Error::NotInitialized)?;
+        if requester != regulator {
+            return Err(Error::NotAuthorized);
+        }
+
+        let record_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LotImmunizations(lot_number))
+            .unwrap_or(Vec::new(&env));
+
+        let mut patients: Vec<Address> = Vec::new(&env);
+        for id in record_ids {
+            if let Some(record) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, VaccineRecord>(&DataKey::ImmunizationRecord(id))
+            {
+                if !patients.contains(&record.patient_id) {
+                    patients.push_back(record.patient_id);
+                }
+            }
+        }
+
+        Ok(patients)
     }
 
     pub fn record_adverse_event(
@@ -139,6 +201,7 @@ impl ImmunizationRegistry {
         env: Env,
         patient_id: Address,
         series_name: String,
+        cvx_code: String,
         doses_required: u32,
         schedule_hash: BytesN<32>,
     ) -> Result<(), Error> {
@@ -146,6 +209,7 @@ impl ImmunizationRegistry {
 
         let series = VaccineSeries {
             series_name,
+            cvx_code,
             doses_required,
             schedule_hash,
         };
@@ -193,15 +257,9 @@ impl ImmunizationRegistry {
         let mut due_series: Vec<VaccineSeries> = Vec::new(&env);
 
         for series in series_list {
-            // Count how many records exist for this user that might match this series.
-            // In a real medical system, we would match by CVX code exactly to the series definition.
-            // Since we don't have CVX to Series mapping in the simplified schema, we'll
-            // just count matching records based on name heuristics or assume each record
-            // is a dose for a generic tracking purpose, or we just trust the system.
-
-            // To adhere precisely to check_due_vaccines using the standard logic:
-            // We check if the patient has received 'doses_required' for vaccines corresponding to this series.
-            // Let's assume series_name matches vaccine_name for this heuristic:
+            // Match administered doses to the series by CVX code, not vaccine name, so
+            // brand names and combination vaccines administered under the same CVX code
+            // are counted correctly.
             let mut administered_doses = 0;
             for id in record_ids.clone() {
                 if let Some(record) = env
@@ -209,7 +267,7 @@ impl ImmunizationRegistry {
                     .persistent()
                     .get::<DataKey, VaccineRecord>(&DataKey::ImmunizationRecord(id))
                 {
-                    if record.vaccine_name == series.series_name {
+                    if record.cvx_code == series.cvx_code {
                         administered_doses += 1;
                     }
                 }
