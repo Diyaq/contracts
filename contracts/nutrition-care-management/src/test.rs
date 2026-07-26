@@ -1589,3 +1589,78 @@ fn test_link_to_care_plan_success_and_idempotent() {
     // Second link to same care plan — idempotent, must not panic.
     client.link_to_care_plan(&outcome_id, &99u64);
 }
+
+// -----------------------------------------------------------------------
+// contraindication admin takeover regression (#617)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_set_contraindication_admin_first_call_succeeds() {
+    let (env, _, _, _) = setup();
+    let client = register(&env);
+    let admin = Address::generate(&env);
+
+    client.set_contraindication_admin(&admin);
+
+    // Admin can now manage the contraindication list.
+    client.add_contraindication(
+        &admin,
+        &symbol_short!("renal"),
+        &String::from_str(&env, "ibuprofen"),
+    );
+}
+
+#[test]
+fn test_set_contraindication_admin_rejects_second_different_caller() {
+    let (env, _, _, _) = setup();
+    let client = register(&env);
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.set_contraindication_admin(&admin);
+
+    let result = client.try_set_contraindication_admin(&attacker);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_hijacked_admin_rejected_by_downstream_functions() {
+    let (env, _, _, _) = setup();
+    let client = register(&env);
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.set_contraindication_admin(&admin);
+    // Attacker's attempt to self-appoint is rejected (see test above);
+    // downstream functions must therefore reject the attacker as admin.
+    let add_result = client.try_add_contraindication(
+        &attacker,
+        &symbol_short!("renal"),
+        &String::from_str(&env, "ibuprofen"),
+    );
+    assert!(add_result.is_err());
+
+    let remove_result = client.try_remove_contraindication(
+        &attacker,
+        &symbol_short!("renal"),
+        &String::from_str(&env, "ibuprofen"),
+    );
+    assert!(remove_result.is_err());
+
+    let rx_contract = Address::generate(&env);
+    let set_rx_result = client.try_set_prescription_contract(&attacker, &rx_contract);
+    assert!(set_rx_result.is_err());
+}
+
+#[test]
+fn test_initialize_contraindication_admin_once() {
+    let (env, _, _, _) = setup();
+    let client = register(&env);
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.initialize_contraindication_admin(&admin);
+
+    let result = client.try_initialize_contraindication_admin(&attacker);
+    assert!(result.is_err());
+}

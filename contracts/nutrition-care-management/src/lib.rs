@@ -339,12 +339,45 @@ impl NutritionCareContract {
         Ok(())
     }
 
+    /// One-time initialization of the contraindication admin.
+    /// Fails if an admin has already been set; use `set_contraindication_admin`
+    /// (called by the current admin) to rotate the admin afterwards.
+    pub fn initialize_contraindication_admin(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::ContraindicationAdmin)
+        {
+            return Err(Error::Unauthorized);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::ContraindicationAdmin, &admin);
+        Ok(())
+    }
+
     /// Set the admin address for managing contraindication lists.
+    ///
+    /// Only succeeds if no admin has been set yet (first-time setup), or if
+    /// called by the current admin (rotation). This prevents any caller from
+    /// self-appointing as admin once one has already been established.
     pub fn set_contraindication_admin(
         env: Env,
         admin: Address,
     ) -> Result<(), Error> {
         admin.require_auth();
+
+        if let Some(current_admin) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::ContraindicationAdmin)
+        {
+            if admin != current_admin {
+                return Err(Error::Unauthorized);
+            }
+        }
+
         env.storage()
             .instance()
             .set(&DataKey::ContraindicationAdmin, &admin);
