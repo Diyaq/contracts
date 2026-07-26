@@ -36,7 +36,7 @@ This document outlines the production readiness review required before deploying
 - [ ] All 80 open issues resolved or explicitly deferred (with rationale documented)
 - [ ] `cargo test --workspace` passes with zero compilation errors
 - [ ] `cargo clippy --workspace` runs with no warnings
-- [ ] WASM sizes verified within Stellar's contract size limit (current limit: 64 KB)
+- [ ] WASM sizes verified within Stellar's contract size limit (current limit: 128 KB) and no contract is within the defined safety margin (10% / ≥ 115.2 KB)
 - [ ] `upgrade-governance` contract controls all production admin keys
 - [ ] All contract interfaces reviewed and stabilized (API changes should be minimal post-launch)
 - [ ] Deployment manifest published and verified (see SECURITY.md)
@@ -121,4 +121,5 @@ Document any rollback decisions in the incident log and notify stakeholders.
 - [DEPLOYMENT.md](./DEPLOYMENT.md) — Deployment guide and procedures
 - [SECURITY.md](./SECURITY.md) — Security architecture and policies
 - [TTL_POLICY.md](./TTL_POLICY.md) — TTL management strategy
-- Stellar Documentation: https://developers.stellar.org/
+- Stellar Documentation: https://developers.stellar.org/ (current limit: 128 KB on Mainnet)
+- [WASM_SIZE_BASELINE.md](./WASM_SIZE_BASELINE.md) — Measured contract sizes and optimization targets
