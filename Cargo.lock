@@ -874,6 +874,7 @@ version = "0.0.0"
 dependencies = [
  "Contracts",
  "patient-registry",
+ "provider-registry",
  "shared",
  "soroban-sdk",
 ]

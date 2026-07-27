@@ -80,7 +80,11 @@ fn test_emergency_access_request() {
 
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
+    let admin = Address::generate(&env);
     env.mock_all_auths();
+
+    client.initialize(&admin);
+    client.register_responder(&admin, &provider);
 
     // Setup emergency profile
     let blood_type = Symbol::new(&env, "AB_NEG");
@@ -121,6 +125,53 @@ fn test_emergency_access_request() {
     assert_eq!(logs.len(), 1);
     assert_eq!(logs.get(0).unwrap().provider_id, provider);
     assert_eq!(logs.get(0).unwrap().emergency_type, emergency_type);
+}
+
+#[test]
+fn test_emergency_access_request_rejects_unregistered_responder() {
+    let env = Env::default();
+    let contract_id = env.register(EmergencyMedicalInfo, ());
+    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let unregistered_caller = Address::generate(&env);
+    let admin = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.initialize(&admin);
+
+    // Setup emergency profile
+    let blood_type = Symbol::new(&env, "AB_NEG");
+    let mut allergies = Vec::new(&env);
+    allergies.push_back(hash(&env, 21));
+    let conditions = Vec::new(&env);
+    let medications = Vec::new(&env);
+    let contacts = create_test_emergency_contacts(&env);
+
+    client.set_emergency_profile(
+        &patient,
+        &blood_type,
+        &allergies,
+        &conditions,
+        &medications,
+        &contacts,
+        &None,
+    );
+
+    // A caller who was never registered as an emergency responder -- merely
+    // controlling an address is not proof of the emergency-responder role.
+    let result = client.try_emergency_access_request(
+        &unregistered_caller,
+        &patient,
+        &Symbol::new(&env, "CARDIAC"),
+        &hash(&env, 51),
+        &hash(&env, 52),
+    );
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+
+    // No access log should have been written for the rejected attempt.
+    let logs = client.get_emergency_access_logs(&patient, &patient);
+    assert_eq!(logs.len(), 0);
 }
 
 #[test]
@@ -416,7 +467,11 @@ fn test_emergency_access_without_profile() {
 
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
+    let admin = Address::generate(&env);
     env.mock_all_auths();
+
+    client.initialize(&admin);
+    client.register_responder(&admin, &provider);
 
     // Try to access without profile
     let result = client.try_emergency_access_request(
@@ -438,7 +493,12 @@ fn test_emergency_access_audit_trail() {
     let patient = Address::generate(&env);
     let provider1 = Address::generate(&env);
     let provider2 = Address::generate(&env);
+    let admin = Address::generate(&env);
     env.mock_all_auths();
+
+    client.initialize(&admin);
+    client.register_responder(&admin, &provider1);
+    client.register_responder(&admin, &provider2);
 
     // Setup profile
     let blood_type = Symbol::new(&env, "A_NEG");
@@ -524,7 +584,11 @@ fn test_comprehensive_emergency_scenario() {
 
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
+    let admin = Address::generate(&env);
     env.mock_all_auths();
+
+    client.initialize(&admin);
+    client.register_responder(&admin, &provider);
 
     // 1. Setup comprehensive emergency profile
     let blood_type = Symbol::new(&env, "AB_POS");
