@@ -443,3 +443,28 @@ fn test_full_discharge_workflow() {
     let plan = client.get_discharge_plan(&plan_id);
     assert_eq!(plan.status, DischargeStatus::Completed);
 }
+
+#[test]
+fn test_complete_discharge_unauthorized() {
+    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
+    let contract_id = env.register(HospitalDischargeContract, ());
+    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+
+    // Create discharge plan with admin
+    let plan_id =
+        client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
+
+    // Generate unrelated address
+    let unrelated = Address::generate(&env);
+
+    // Attempt to complete discharge with unauthorized address
+    let result = client.try_complete_discharge(
+        &unrelated,
+        &plan_id,
+        &1950u64,
+        &String::from_str(&env, "Home"),
+    );
+
+    // Should fail with Unauthorized error
+    assert!(result.is_err());
+}

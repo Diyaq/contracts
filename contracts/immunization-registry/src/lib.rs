@@ -39,6 +39,22 @@ impl ImmunizationRegistry {
     pub fn record_immunization(env: Env, record: VaccineRecord) -> Result<u64, Error> {
         record.provider_id.require_auth();
 
+        // Validate dose_number is not zero
+        if record.dose_number == 0 {
+            return Err(Error::InvalidDoseNumber);
+        }
+
+        // Validate administration_date is not in the future
+        let current_time = env.ledger().timestamp();
+        if record.administration_date > current_time {
+            return Err(Error::InvalidDoseNumber);
+        }
+
+        // Validate vaccine is not expired at administration
+        if record.administration_date > record.expiration_date {
+            return Err(Error::InvalidDoseNumber);
+        }
+
         let count: u64 = env
             .storage()
             .instance()
