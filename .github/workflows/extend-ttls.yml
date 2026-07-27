@@ -33,10 +33,10 @@ jobs:
 
       - name: Install Stellar CLI
         run: |
-          curl -L https://github.com/stellar/go/releases/download/stellar-core-21.5.0/stellar-core-21.5.0-ubuntu-22.04.tar.gz | tar -xz
-          mv stellar-core /usr/local/bin/
-          # Or install using package manager:
-          # sudo apt-get update && sudo apt-get install -y stellar-cli
+          cargo install --locked stellar-cli
+
+      - name: Verify Stellar CLI install
+        run: stellar --version
 
       - name: Extend TTLs - Mainnet
         if: github.event_name == 'schedule' || inputs.network == 'mainnet'
