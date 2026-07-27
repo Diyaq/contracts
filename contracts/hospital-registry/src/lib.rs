@@ -347,6 +347,39 @@ impl HospitalRegistry {
         Ok(())
     }
 
+    /// Admin-only: revoke a hospital's credential by setting its `revoked_at` timestamp (#682).
+    /// Once revoked, all state-mutating calls on that hospital will fail with `CredentialRevoked`.
+    pub fn revoke_hospital_credential(
+        env: Env,
+        admin: Address,
+        wallet: Address,
+    ) -> Result<(), ContractError> {
+        validate_nonzero_address(&admin).map_err(|_| ContractError::InvalidAddress)?;
+        validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(ContractError::NotAuthorized)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAuthorized);
+        }
+
+        let mut hospital = Self::load_hospital(&env, &wallet)?;
+        hospital.credential.revoked_at = Some(env.ledger().timestamp());
+        env.storage()
+            .persistent()
+            .set(&DataKey::Hospital(wallet.clone()), &hospital);
+
+        env.events().publish(
+            (symbol_short!("rev_hosp"), wallet),
+            symbol_short!("success"),
+        );
+        Ok(())
+    }
+
     pub fn get_hospital(env: Env, wallet: Address) -> Result<HospitalData, ContractError> {
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         Self::load_hospital(&env, &wallet)

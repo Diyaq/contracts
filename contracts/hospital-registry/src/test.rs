@@ -433,3 +433,45 @@ fn test_set_hospital_config_exceeds_limits() {
     });
     assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
 }
+
+// ── Credential revocation (#682) ──────────────────────────────────────────────
+
+#[test]
+fn test_revoke_hospital_credential_prevents_mutations() {
+    let env = Env::default();
+    let contract_id = env.register(HospitalRegistry, ());
+    let client = HospitalRegistryClient::new(&env, &contract_id);
+
+    let hospital_wallet = Address::generate(&env);
+    let admin = Address::generate(&env);
+    env.mock_all_auths();
+
+    // Set the admin
+    client.set_admin(&admin, &admin);
+
+    register_hospital_with_anchor(&env, &client, &hospital_wallet);
+
+    // Hospital is active before revocation
+    assert!(client.is_hospital_active(&hospital_wallet));
+
+    // Revoke the credential
+    client.revoke_hospital_credential(&admin, &hospital_wallet);
+
+    // Hospital should no longer be active
+    assert!(!client.is_hospital_active(&hospital_wallet));
+
+    // State-mutating calls should now fail with CredentialRevoked
+    let result = client.try_update_hospital(
+        &hospital_wallet,
+        &String::from_str(&env, "Should fail"),
+    );
+    assert_eq!(result, Err(Ok(ContractError::CredentialRevoked)));
+
+    // Even the hospital's own config updates should fail
+    let result = client.try_update_departments(
+        &hospital_wallet,
+        &Vec::new(&env),
+    );
+    assert_eq!(result, Err(Ok(ContractError::CredentialRevoked)));
+}
+

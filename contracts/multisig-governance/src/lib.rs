@@ -129,6 +129,10 @@ pub struct MultisigGovernance;
 impl MultisigGovernance {
     /// Initialize with a set of admin signers, an approval threshold, a
     /// proposal TTL in seconds, and the minimum quorum count.
+    ///
+    /// At least one of the provided signers must authenticate to prevent a
+    /// front-running attack where an attacker initializes the contract with
+    /// their own signer set before the legitimate deployer can (#683).
     pub fn initialize(
         env: Env,
         signers: Vec<Address>,
@@ -144,6 +148,10 @@ impl MultisigGovernance {
         }
         if quorum_min > signers.len() {
             return Err(Error::InvalidThreshold);
+        }
+        // Require at least one of the initial signers to authorize the call (#683)
+        if let Some(first_signer) = signers.get(0) {
+            first_signer.require_auth();
         }
         env.storage().persistent().set(&DataKey::Signers, &signers);
         env.storage()

@@ -53,6 +53,7 @@ pub struct CoveragePlan {
 #[contractclient(name = "InsurerRegistryClient")]
 pub trait InsurerRegistryInterface {
     fn get_coverage_plans(env: Env, insurer_wallet: Address) -> Vec<CoveragePlan>;
+    fn is_insurer_active(env: Env, wallet: Address) -> bool;
 }
 
 /// Shorter deadline (hours) assigned to escalated requests.
@@ -247,6 +248,7 @@ impl PriorAuthorizationContract {
             reviewer_role: None,
             sla_deadline,
             auto_review_eligible: !sla_config.requires_medical_director,
+            insurer_id: insurer_wallet,
         };
 
         save_auth_request(&env, &req);
@@ -314,6 +316,11 @@ impl PriorAuthorizationContract {
 
         // Validate reviewer authorization
         let reviewer = load_reviewer(&env, &reviewer_id).ok_or(Error::ReviewerNotFound)?;
+
+        // Ensure reviewer belongs to the same insurer as the request (#684)
+        if reviewer.insurer_id != req.insurer_id {
+            return Err(Error::ReviewerNotAuthorized);
+        }
 
         if !reviewer.is_active {
             return Err(Error::ReviewerNotAuthorized);
@@ -783,6 +790,17 @@ impl PriorAuthorizationContract {
         expires_at: Option<u64>,
     ) -> Result<(), Error> {
         insurer_id.require_auth();
+
+        // Cross-check that the insurer is actually registered in the insurer-registry (#684)
+        let insurer_registry_id: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::InsurerRegistryId)
+            .ok_or(Error::NotInitialized)?;
+        let registry = InsurerRegistryClient::new(&env, &insurer_registry_id);
+        if !registry.is_insurer_active(&insurer_id) {
+            return Err(Error::Unauthorized);
+        }
 
         let reviewer = Reviewer {
             reviewer_id: reviewer_id.clone(),

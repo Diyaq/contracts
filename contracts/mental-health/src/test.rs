@@ -534,3 +534,161 @@ fn test_crisis_escalation_without_emergency_contract_configured() {
     );
     assert_eq!(plan_id, 1);
 }
+
+// ── Same-day collision prevention (#681) ──────────────────────────────────────
+
+#[test]
+fn test_two_sessions_same_day_both_retained() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MentalHealthContract, ());
+    let client = MentalHealthContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    grant_consent(&env, &client, &patient_id, "therapy_session", &provider_id);
+
+    // Create a treatment plan
+    let plan_id = client.create_treatment_plan(
+        &patient_id,
+        &provider_id,
+        &vec![&env, String::from_str(&env, "GAD")],
+        &Vec::new(&env),
+        &vec![&env, String::from_str(&env, "CBT")],
+        &String::from_str(&env, "weekly"),
+        &1_700_000_000u64,
+    );
+
+    let session_date = 1_700_000_000u64;
+
+    // Record first session on that date
+    let id1 = client.record_therapy_session(
+        &plan_id,
+        &session_date,
+        &Symbol::new(&env, "individual"),
+        &50u32,
+        &vec![&env, String::from_str(&env, "CBT")],
+        &BytesN::from_array(&env, &[1; 32]),
+        &None,
+    );
+
+    // Record second session on the same date (different type)
+    let id2 = client.record_therapy_session(
+        &plan_id,
+        &session_date,
+        &Symbol::new(&env, "group"),
+        &90u32,
+        &vec![&env, String::from_str(&env, "Group therapy")],
+        &BytesN::from_array(&env, &[2; 32]),
+        &None,
+    );
+
+    // Both IDs should be different — no overwrite occurred
+    assert_ne!(id1, id2);
+    assert_eq!(id1, 1);
+    assert_eq!(id2, 2);
+}
+
+#[test]
+fn test_two_symptoms_same_day_both_retained() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MentalHealthContract, ());
+    let client = MentalHealthContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    grant_consent(&env, &client, &patient_id, "symptom_severity", &provider_id);
+
+    let measurement_date = 1_700_000_000u64;
+
+    // Record first symptom measurement on that date
+    let id1 = client.track_symptom_severity(
+        &patient_id,
+        &provider_id,
+        &Symbol::new(&env, "anxiety"),
+        &7u32,
+        &measurement_date,
+        &Symbol::new(&env, "GAD7"),
+    );
+
+    // Record second symptom measurement on the same date
+    let id2 = client.track_symptom_severity(
+        &patient_id,
+        &provider_id,
+        &Symbol::new(&env, "anxiety"),
+        &5u32,
+        &measurement_date,
+        &Symbol::new(&env, "GAD7"),
+    );
+
+    assert_ne!(id1, id2);
+    assert_eq!(id1, 1);
+    assert_eq!(id2, 2);
+}
+
+#[test]
+fn test_two_outcomes_same_day_both_retained() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MentalHealthContract, ());
+    let client = MentalHealthContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    grant_consent(&env, &client, &patient_id, "outcomes", &provider_id);
+
+    // Create a treatment plan
+    let plan_id = client.create_treatment_plan(
+        &patient_id,
+        &provider_id,
+        &vec![&env, String::from_str(&env, "MDD")],
+        &Vec::new(&env),
+        &vec![&env, String::from_str(&env, "Medication management")],
+        &String::from_str(&env, "monthly"),
+        &1_800_000_000u64,
+    );
+
+    let measurement_date = 1_700_000_000u64;
+
+    let mut measures1 = Vec::new(&env);
+    measures1.push_back(OutcomeMeasure {
+        measure_name: String::from_str(&env, "PHQ9"),
+        baseline_score: 18,
+        current_score: 12,
+        improvement_percentage: 33,
+    });
+
+    let id1 = client.track_treatment_outcomes(
+        &plan_id,
+        &measurement_date,
+        &measures1,
+        &true,
+    );
+
+    let mut measures2 = Vec::new(&env);
+    measures2.push_back(OutcomeMeasure {
+        measure_name: String::from_str(&env, "PHQ9"),
+        baseline_score: 18,
+        current_score: 8,
+        improvement_percentage: 55,
+    });
+
+    let id2 = client.track_treatment_outcomes(
+        &plan_id,
+        &measurement_date,
+        &measures2,
+        &true,
+    );
+
+    assert_ne!(id1, id2);
+    assert_eq!(id1, 1);
+    assert_eq!(id2, 2);
+}
+
