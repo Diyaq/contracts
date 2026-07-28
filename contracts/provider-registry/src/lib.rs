@@ -279,6 +279,7 @@ impl ProviderRegistry {
         provider: Address,
         record_id: String,
         data: String,
+        nonce: u64,
     ) -> Result<(), Error> {
         Self::assert_initialized(&env)?;
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
@@ -286,6 +287,8 @@ impl ProviderRegistry {
         if !Self::is_provider(env.clone(), provider.clone()) {
             return Err(Error::NotAProvider);
         }
+        // Replay protection: verify the nonce is strictly greater than the last used nonce
+        Self::verify_and_increment_nonce(&env, &provider, nonce)?;
         env.storage()
             .persistent()
             .set(&DataKey::Record(record_id.clone()), &data);

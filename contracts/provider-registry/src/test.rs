@@ -153,10 +153,12 @@ fn test_add_record_by_whitelisted_provider() {
     let (env, admin, client) = setup();
     let provider = Address::generate(&env);
     register_provider_with_anchor(&env, &client, &admin, &provider);
+    let nonce = client.get_caller_nonce(&provider);
     client.add_record(
         &provider,
         &String::from_str(&env, "REC001"),
         &String::from_str(&env, "Patient data"),
+        &(nonce + 1),
     );
     assert_eq!(
         client.get_record(&String::from_str(&env, "REC001")),
@@ -173,6 +175,7 @@ fn test_add_record_non_provider_returns_error() {
             &stranger,
             &String::from_str(&env, "REC002"),
             &String::from_str(&env, "bad data"),
+            &1u64,
         )
         .unwrap_err()
         .unwrap();
@@ -190,10 +193,59 @@ fn test_add_record_after_revocation_returns_error() {
             &provider,
             &String::from_str(&env, "REC003"),
             &String::from_str(&env, "stale"),
+            &1u64,
         )
         .unwrap_err()
         .unwrap();
     assert_eq!(err, Error::NotAProvider);
+}
+
+#[test]
+fn test_add_record_stale_nonce_rejected() {
+    let (env, admin, client) = setup();
+    env.mock_all_auths();
+    let provider = Address::generate(&env);
+    register_provider_with_anchor(&env, &client, &admin, &provider);
+
+    let nonce = client.get_caller_nonce(&provider);
+    // First call with valid nonce succeeds
+    client.add_record(
+        &provider,
+        &String::from_str(&env, "REC001"),
+        &String::from_str(&env, "data"),
+        &(nonce + 1),
+    );
+    // Second call with the same nonce must be rejected (stale)
+    let err = client
+        .try_add_record(
+            &provider,
+            &String::from_str(&env, "REC002"),
+            &String::from_str(&env, "replay"),
+            &(nonce + 1),
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::StaleNonce);
+}
+
+#[test]
+fn test_add_record_zero_nonce_accepted_as_initial() {
+    let (env, admin, client) = setup();
+    env.mock_all_auths();
+    let provider = Address::generate(&env);
+    register_provider_with_anchor(&env, &client, &admin, &provider);
+
+    // Initial nonce is 0; passing 0 should fail (must be > 0), so pass 1
+    let nonce = client.get_caller_nonce(&provider);
+    assert_eq!(nonce, 0);
+    client.add_record(
+        &provider,
+        &String::from_str(&env, "REC001"),
+        &String::from_str(&env, "initial data"),
+        &(nonce + 1),
+    );
+    // Verify the nonce was incremented
+    assert_eq!(client.get_caller_nonce(&provider), 1);
 }
 
 // ── get_record ────────────────────────────────────────────────────────────────

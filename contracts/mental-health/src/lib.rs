@@ -185,6 +185,12 @@ pub enum DataKey {
     Consent(Address, Symbol, Address),
     /// Address of the emergency-medical-info contract for crisis escalation
     EmergencyContractAddress,
+    /// Auto-incrementing counter for pseudonym IDs
+    PseudonymCounter,
+    /// Mapping from pseudonym address to real patient address
+    PseudonymMapping(Address),
+    /// Authorized address that can resolve pseudonyms (e.g. emergency-medical-info contract)
+    AuthorizedResolver(Address),
 }
 
 #[contract]
@@ -241,11 +247,32 @@ impl MentalHealthContract {
         }
 
         let patient_token = if privacy_flagged {
-            // Derive a de-identified patient token via SHA-256
-            let patient_bytes = patient_id.clone().to_xdr(env);
-            let hash: [u8; 32] = env.crypto().sha256(&patient_bytes).into();
-            let salt = BytesN::<32>::from_array(env, &hash);
-            env.deployer().with_current_contract(salt).deployed_address()
+            // Generate a unique pseudonym ID
+            let pseudonym_counter: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::PseudonymCounter)
+                .unwrap_or(0);
+            let next_id = pseudonym_counter + 1;
+            env.storage()
+                .instance()
+                .set(&DataKey::PseudonymCounter, &next_id);
+
+            // Derive a deterministic pseudonym address from the counter
+            let pseudo_bytes = BytesN::from_array(env, &env.crypto().sha256(
+                &next_id.to_xdr(env),
+            ).into());
+            let salt = pseudo_bytes;
+            let pseudonym_address =
+                env.deployer().with_current_contract(salt).deployed_address();
+
+            // Register the mapping so authorized resolvers can reverse it
+            env.storage().persistent().set(
+                &DataKey::PseudonymMapping(pseudonym_address.clone()),
+                patient_id,
+            );
+
+            pseudonym_address
         } else {
             patient_id.clone()
         };
@@ -777,6 +804,62 @@ impl MentalHealthContract {
             &requires_explicit_consent,
         );
         Ok(())
+    }
+
+    /// Authorize an address (e.g. the emergency-medical-info contract) to resolve
+    /// de-identified pseudonyms back to real patient addresses.
+    pub fn authorize_resolver(env: Env, admin: Address, resolver: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let emergency_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::EmergencyContractAddress)
+            .ok_or(Error::NotAuthorized)?;
+        // Only the contract deployer/emergency-contract admin can authorize resolvers;
+        // for simplicity, require that the caller matches the emergency contract address.
+        if admin != emergency_addr {
+            return Err(Error::NotAuthorized);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::AuthorizedResolver(resolver.clone()), &true);
+        Ok(())
+    }
+
+    /// Revoke a resolver's authorization.
+    pub fn revoke_resolver(env: Env, admin: Address, resolver: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let emergency_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::EmergencyContractAddress)
+            .ok_or(Error::NotAuthorized)?;
+        if admin != emergency_addr {
+            return Err(Error::NotAuthorized);
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AuthorizedResolver(resolver));
+        Ok(())
+    }
+
+    /// Resolve a de-identified pseudonym address back to the real patient address.
+    /// Only authorized resolvers may call this.
+    pub fn resolve_pseudonym(env: Env, caller: Address, pseudonym: Address) -> Result<Address, Error> {
+        caller.require_auth();
+        // Verify caller is authorized
+        let is_authorized: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AuthorizedResolver(caller.clone()))
+            .unwrap_or(false);
+        if !is_authorized {
+            return Err(Error::NotAuthorized);
+        }
+        env.storage()
+            .persistent()
+            .get(&DataKey::PseudonymMapping(pseudonym))
+            .ok_or(Error::NotFound)
     }
 }
 
