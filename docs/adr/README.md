@@ -17,3 +17,4 @@ The ADRs in this directory cover the contract platform, TTL design, privacy, gov
 - [ADR-004: Multi-sig governance threshold design](ADR-004.md)
 - [ADR-005: Actor verification caching strategy in shared module](ADR-005.md)
 - [ADR-006: Why no-std with WASM target](ADR-006.md)
+- [ADR-007: Storing healthcare-related data on a public, permanent ledger](ADR-007-public-ledger-for-healthcare-data.md)

@@ -18,7 +18,7 @@ This document outlines the production readiness review required before deploying
 - [ ] HIPAA Security Rule gap analysis completed
 - [ ] Data Processing Agreement with Stellar Foundation reviewed and signed
 - [ ] GDPR data residency requirements assessed (acknowledge on-chain data is public and permanent)
-- [ ] Legal review of storing PHI references on a public blockchain completed
+- [ ] Legal review of storing PHI references on a public blockchain completed ([ADR-007: Public ledger for healthcare data](docs/adr/ADR-007-public-ledger-for-healthcare-data.md))
 - [ ] Documentation on data minimization and encryption strategies in place
 
 ### Operations
