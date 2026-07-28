@@ -174,6 +174,7 @@ impl LabManagementContract {
             .persistent()
             .get(&DataKey::LabOrder(order_id))
             .ok_or(Error::NotFound)?;
+        order.provider_id.require_auth();
         order.lab_id = Some(lab_id);
         order.status = Symbol::new(&env, "Assigned");
         env.storage()
@@ -201,7 +202,12 @@ impl LabManagementContract {
             .get(&DataKey::LabOrder(order_id))
             .ok_or(Error::NotFound)?;
 
-        // 2. Perform QC validation (BEFORE any mutations).
+        // 2. Verify the caller is the assigned lab.
+        if order.lab_id != Some(lab_id.clone()) {
+            return Err(Error::Unauthorized);
+        }
+
+        // 3. Perform QC validation (BEFORE any mutations).
         Self::validate_qc_results(qc_passed, &results_summary)?;
 
         // MUTATION PHASE: All state changes after validations have passed.
