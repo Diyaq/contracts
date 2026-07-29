@@ -54,6 +54,7 @@ pub enum Error {
     RotationExpired    = 10,
     NotPendingAdmin    = 11,
     StaleNonce         = 12,
+    AlreadyExists      = 13,
 }
 
 /// Input entry for `batch_register_providers`.
@@ -110,7 +111,7 @@ pub enum DataKey {
     Initialized,
     Admin,
     Provider(Address),
-    Record(String),
+    Record(Address, String),
     ProviderRecords(Address),
     ProviderRecordCount(Address),
     RateLimitConfig,
@@ -157,6 +158,10 @@ impl ProviderRegistry {
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&issuer).map_err(|_| Error::InvalidAddress)?;
         Self::assert_admin(&env, &admin)?;
+        let key = DataKey::Provider(provider.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(Error::AlreadyExists);
+        }
         let profile = ProviderProfile {
             name,
             specialty,
@@ -171,9 +176,7 @@ impl ProviderRegistry {
             },
             active: true,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::Provider(provider.clone()), &profile);
+        env.storage().persistent().set(&key, &profile);
         env.events()
             .publish((symbol_short!("reg_prov"), provider), symbol_short!("ok"));
         Ok(())
@@ -251,6 +254,30 @@ impl ProviderRegistry {
         Ok(())
     }
 
+    /// Reactivate a previously revoked provider without altering their credential
+    /// anchor. Distinct from `register_provider`, which now rejects re-registration
+    /// of an existing address, and emits its own event for audit-trail clarity.
+    pub fn reactivate_provider(env: Env, admin: Address, provider: Address) -> Result<(), Error> {
+        Self::assert_initialized(&env)?;
+        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
+        Self::assert_admin(&env, &admin)?;
+        let key = DataKey::Provider(provider.clone());
+        let mut profile: ProviderProfile = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::RecordNotFound)?;
+
+        profile.active = true;
+        profile.credential.revoked_at = None;
+        env.storage().persistent().set(&key, &profile);
+
+        env.events()
+            .publish((symbol_short!("react_pr"), provider), symbol_short!("ok"));
+        Ok(())
+    }
+
     pub fn is_provider(env: Env, provider: Address) -> bool {
         Self::is_provider_active(&env, &provider)
     }
@@ -288,16 +315,33 @@ impl ProviderRegistry {
         }
         env.storage()
             .persistent()
-            .set(&DataKey::Record(record_id.clone()), &data);
+            .set(&DataKey::Record(provider.clone(), record_id.clone()), &data);
         env.events()
             .publish((symbol_short!("add_rec"), provider, record_id), symbol_short!("ok"));
         Ok(())
     }
 
-    pub fn get_record(env: Env, record_id: String) -> Result<String, Error> {
+    /// Fetch a provider's record. `requester` must authenticate and be either the
+    /// owning provider or the admin — records are scoped per-provider and are not
+    /// globally readable given the module's HIPAA framing.
+    pub fn get_record(
+        env: Env,
+        requester: Address,
+        provider: Address,
+        record_id: String,
+    ) -> Result<String, Error> {
+        requester.require_auth();
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if requester != provider && requester != admin {
+            return Err(Error::Unauthorized);
+        }
         env.storage()
             .persistent()
-            .get(&DataKey::Record(record_id))
+            .get(&DataKey::Record(provider, record_id))
             .ok_or(Error::RecordNotFound)
     }
 
