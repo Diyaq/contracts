@@ -30,6 +30,9 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, Address, BytesN, Env, String, Symbol, Vec,
 };
 
+const PERSISTENT_TTL_BUMP: u32 = 535_680; // ~31 days at 5s/ledger
+const PERSISTENT_TTL_THRESHOLD: u32 = 518_400; // ~30 days
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RehabGoal {
@@ -297,7 +300,7 @@ impl RehabilitationServicesContract {
 
         let eval_id = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::EvaluationCounter)
             .unwrap_or(0u64)
             + 1;
@@ -315,10 +318,15 @@ impl RehabilitationServicesContract {
         };
 
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::Evaluation(eval_id), &evaluation);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Evaluation(eval_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::EvaluationCounter, &eval_id);
 
         Ok(eval_id)
@@ -335,7 +343,7 @@ impl RehabilitationServicesContract {
     ) -> Result<(), Error> {
         let eval: PTEvaluation = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Evaluation(evaluation_id))
             .ok_or(Error::NotFound)?;
 
@@ -351,14 +359,19 @@ impl RehabilitationServicesContract {
 
         let mut assessments: Vec<ROMAssessment> = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::ROMAssessments(evaluation_id))
             .unwrap_or(Vec::new(&env));
 
         assessments.push_back(assessment);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::ROMAssessments(evaluation_id), &assessments);
+        env.storage().persistent().extend_ttl(
+            &DataKey::ROMAssessments(evaluation_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
 
         Ok(())
     }
@@ -372,7 +385,7 @@ impl RehabilitationServicesContract {
     ) -> Result<(), Error> {
         let eval: PTEvaluation = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Evaluation(evaluation_id))
             .ok_or(Error::NotFound)?;
 
@@ -386,14 +399,19 @@ impl RehabilitationServicesContract {
 
         let mut assessments: Vec<StrengthAssessment> = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::StrengthAssessments(evaluation_id))
             .unwrap_or(Vec::new(&env));
 
         assessments.push_back(assessment);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::StrengthAssessments(evaluation_id), &assessments);
+        env.storage().persistent().extend_ttl(
+            &DataKey::StrengthAssessments(evaluation_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
 
         Ok(())
     }
@@ -407,7 +425,7 @@ impl RehabilitationServicesContract {
     ) -> Result<(), Error> {
         let eval: PTEvaluation = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Evaluation(evaluation_id))
             .ok_or(Error::NotFound)?;
 
@@ -421,14 +439,19 @@ impl RehabilitationServicesContract {
 
         let mut assessments: Vec<BalanceMobilityAssessment> = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::BalanceMobilityAssessments(evaluation_id))
             .unwrap_or(Vec::new(&env));
 
         assessments.push_back(assessment);
-        env.storage().instance().set(
+        env.storage().persistent().set(
             &DataKey::BalanceMobilityAssessments(evaluation_id),
             &assessments,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::BalanceMobilityAssessments(evaluation_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
         );
 
         Ok(())
@@ -449,13 +472,13 @@ impl RehabilitationServicesContract {
 
         let _eval: PTEvaluation = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Evaluation(evaluation_id))
             .ok_or(Error::NotFound)?;
 
         let plan_id = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TreatmentPlanCounter)
             .unwrap_or(0u64)
             + 1;
@@ -473,15 +496,20 @@ impl RehabilitationServicesContract {
         };
 
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::TreatmentPlan(plan_id), &plan);
+        env.storage().persistent().extend_ttl(
+            &DataKey::TreatmentPlan(plan_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::TreatmentPlanCounter, &plan_id);
 
         // Initialize version tracking (#560)
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::PlanVersion(plan_id), &1u64);
         let history_entry = PlanVersionEntry {
             ipfs_hash: String::from_str(&env, ""),
@@ -492,7 +520,7 @@ impl RehabilitationServicesContract {
         let mut history: Vec<PlanVersionEntry> = Vec::new(&env);
         history.push_back(history_entry);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::PlanVersionHistory(plan_id), &history);
 
         Ok(plan_id)
@@ -509,7 +537,7 @@ impl RehabilitationServicesContract {
     ) -> Result<(), Error> {
         let plan: RehabTreatmentPlan = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TreatmentPlan(treatment_plan_id))
             .ok_or(Error::NotFound)?;
 
@@ -525,14 +553,19 @@ impl RehabilitationServicesContract {
 
         let mut sessions: Vec<TherapySession> = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TherapySessions(treatment_plan_id))
             .unwrap_or(Vec::new(&env));
 
         sessions.push_back(session);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::TherapySessions(treatment_plan_id), &sessions);
+        env.storage().persistent().extend_ttl(
+            &DataKey::TherapySessions(treatment_plan_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
 
         Ok(())
     }
@@ -548,7 +581,7 @@ impl RehabilitationServicesContract {
     ) -> Result<(), Error> {
         let plan: RehabTreatmentPlan = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TreatmentPlan(treatment_plan_id))
             .ok_or(Error::NotFound)?;
 
@@ -564,14 +597,19 @@ impl RehabilitationServicesContract {
 
         let mut measurements: Vec<PainMeasurement> = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::PainMeasurements(treatment_plan_id))
             .unwrap_or(Vec::new(&env));
 
         measurements.push_back(measurement);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::PainMeasurements(treatment_plan_id), &measurements);
+        env.storage().persistent().extend_ttl(
+            &DataKey::PainMeasurements(treatment_plan_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
 
         Ok(())
     }
@@ -586,7 +624,7 @@ impl RehabilitationServicesContract {
     ) -> Result<(), Error> {
         let plan: RehabTreatmentPlan = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TreatmentPlan(treatment_plan_id))
             .ok_or(Error::NotFound)?;
 
@@ -601,14 +639,19 @@ impl RehabilitationServicesContract {
 
         let mut outcomes: Vec<FunctionalOutcome> = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::FunctionalOutcomes(treatment_plan_id))
             .unwrap_or(Vec::new(&env));
 
         outcomes.push_back(outcome);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::FunctionalOutcomes(treatment_plan_id), &outcomes);
+        env.storage().persistent().extend_ttl(
+            &DataKey::FunctionalOutcomes(treatment_plan_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
 
         Ok(())
     }
@@ -621,7 +664,7 @@ impl RehabilitationServicesContract {
     ) -> Result<u64, Error> {
         let plan: RehabTreatmentPlan = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TreatmentPlan(treatment_plan_id))
             .ok_or(Error::NotFound)?;
 
@@ -629,7 +672,7 @@ impl RehabilitationServicesContract {
 
         let auth_id = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::AuthorizationCounter)
             .unwrap_or(0u64)
             + 1;
@@ -643,10 +686,15 @@ impl RehabilitationServicesContract {
         };
 
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::Authorization(auth_id), &authorization);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Authorization(auth_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::AuthorizationCounter, &auth_id);
 
         Ok(auth_id)
@@ -663,7 +711,7 @@ impl RehabilitationServicesContract {
     ) -> Result<(), Error> {
         let plan: RehabTreatmentPlan = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TreatmentPlan(treatment_plan_id))
             .ok_or(Error::NotFound)?;
 
@@ -679,14 +727,19 @@ impl RehabilitationServicesContract {
 
         let mut notes: Vec<ProgressNote> = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::ProgressNotes(treatment_plan_id))
             .unwrap_or(Vec::new(&env));
 
         notes.push_back(note);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::ProgressNotes(treatment_plan_id), &notes);
+        env.storage().persistent().extend_ttl(
+            &DataKey::ProgressNotes(treatment_plan_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
 
         Ok(())
     }
@@ -702,7 +755,7 @@ impl RehabilitationServicesContract {
     ) -> Result<(), Error> {
         let plan: RehabTreatmentPlan = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TreatmentPlan(treatment_plan_id))
             .ok_or(Error::NotFound)?;
 
@@ -717,8 +770,13 @@ impl RehabilitationServicesContract {
         };
 
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::Discharge(treatment_plan_id), &discharge);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Discharge(treatment_plan_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
 
         Ok(())
     }
@@ -744,7 +802,7 @@ impl RehabilitationServicesContract {
 
         let mut plan: RehabTreatmentPlan = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TreatmentPlan(plan_id))
             .ok_or(Error::NotFound)?;
 
@@ -760,21 +818,23 @@ impl RehabilitationServicesContract {
         plan.prognosis = prognosis;
 
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::TreatmentPlan(plan_id), &plan);
-
-        // Bump TTL on write
-        env.storage().instance().extend_ttl(0, 5000);
+        env.storage().persistent().extend_ttl(
+            &DataKey::TreatmentPlan(plan_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
 
         // Increment version
         let current_version: u64 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::PlanVersion(plan_id))
             .unwrap_or(1);
         let new_version = current_version + 1;
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::PlanVersion(plan_id), &new_version);
 
         // Append to version history
@@ -786,12 +846,12 @@ impl RehabilitationServicesContract {
         };
         let mut history: Vec<PlanVersionEntry> = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::PlanVersionHistory(plan_id))
             .unwrap_or(Vec::new(&env));
         history.push_back(entry);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::PlanVersionHistory(plan_id), &history);
 
         // Emit plan_updated event
@@ -805,11 +865,8 @@ impl RehabilitationServicesContract {
 
     /// Retrieve the full version history for a treatment plan.
     pub fn get_treatment_plan_history(env: Env, plan_id: u64) -> Vec<PlanVersionEntry> {
-        // Bump TTL on read
-        env.storage().instance().extend_ttl(0, 5000);
-
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::PlanVersionHistory(plan_id))
             .unwrap_or(Vec::new(&env))
     }
@@ -817,56 +874,56 @@ impl RehabilitationServicesContract {
     // Query functions
     pub fn get_evaluation(env: Env, evaluation_id: u64) -> Result<PTEvaluation, Error> {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Evaluation(evaluation_id))
             .ok_or(Error::NotFound)
     }
 
     pub fn get_treatment_plan(env: Env, plan_id: u64) -> Result<RehabTreatmentPlan, Error> {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TreatmentPlan(plan_id))
             .ok_or(Error::NotFound)
     }
 
     pub fn get_rom_assessments(env: Env, evaluation_id: u64) -> Vec<ROMAssessment> {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::ROMAssessments(evaluation_id))
             .unwrap_or(Vec::new(&env))
     }
 
     pub fn get_strength_assessments(env: Env, evaluation_id: u64) -> Vec<StrengthAssessment> {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::StrengthAssessments(evaluation_id))
             .unwrap_or(Vec::new(&env))
     }
 
     pub fn get_therapy_sessions(env: Env, treatment_plan_id: u64) -> Vec<TherapySession> {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TherapySessions(treatment_plan_id))
             .unwrap_or(Vec::new(&env))
     }
 
     pub fn get_pain_measurements(env: Env, treatment_plan_id: u64) -> Vec<PainMeasurement> {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::PainMeasurements(treatment_plan_id))
             .unwrap_or(Vec::new(&env))
     }
 
     pub fn get_functional_outcomes(env: Env, treatment_plan_id: u64) -> Vec<FunctionalOutcome> {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::FunctionalOutcomes(treatment_plan_id))
             .unwrap_or(Vec::new(&env))
     }
 
     pub fn get_progress_notes(env: Env, treatment_plan_id: u64) -> Vec<ProgressNote> {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::ProgressNotes(treatment_plan_id))
             .unwrap_or(Vec::new(&env))
     }
@@ -876,7 +933,7 @@ impl RehabilitationServicesContract {
         treatment_plan_id: u64,
     ) -> Result<DischargeRecord, Error> {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Discharge(treatment_plan_id))
             .ok_or(Error::NotFound)
     }
@@ -886,7 +943,7 @@ impl RehabilitationServicesContract {
         evaluation_id: u64,
     ) -> Vec<BalanceMobilityAssessment> {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::BalanceMobilityAssessments(evaluation_id))
             .unwrap_or(Vec::new(&env))
     }
@@ -909,7 +966,7 @@ impl RehabilitationServicesContract {
     ) -> Result<u64, Error> {
         let plan: RehabTreatmentPlan = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TreatmentPlan(plan_id))
             .ok_or(Error::NotFound)?;
 
@@ -917,7 +974,7 @@ impl RehabilitationServicesContract {
 
         let goal_id = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::GoalCounter)
             .unwrap_or(0u64)
             + 1;
@@ -926,7 +983,7 @@ impl RehabilitationServicesContract {
         // Read a per-plan counter directly — O(1), no global scan.
         let plan_version: u64 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::PlanGoalCount(plan_id))
             .unwrap_or(0u64);
 
@@ -941,13 +998,18 @@ impl RehabilitationServicesContract {
         };
 
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::MeasurableGoal(goal_id), &goal);
+        env.storage().persistent().extend_ttl(
+            &DataKey::MeasurableGoal(goal_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::GoalCounter, &goal_id);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::PlanGoalCount(plan_id), &(plan_version + 1));
 
         env.events().publish(
@@ -971,7 +1033,7 @@ impl RehabilitationServicesContract {
     ) -> Result<(), Error> {
         let plan: RehabTreatmentPlan = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TreatmentPlan(plan_id))
             .ok_or(Error::NotFound)?;
 
@@ -979,7 +1041,7 @@ impl RehabilitationServicesContract {
 
         let mut goal: MeasurableGoal = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::MeasurableGoal(goal_id))
             .ok_or(Error::NotFound)?;
 
@@ -995,20 +1057,30 @@ impl RehabilitationServicesContract {
 
         let mut progress: Vec<ProgressEntry> = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::GoalProgressList(goal_id))
             .unwrap_or(Vec::new(&env));
         progress.push_back(entry);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::GoalProgressList(goal_id), &progress);
+        env.storage().persistent().extend_ttl(
+            &DataKey::GoalProgressList(goal_id),
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_BUMP,
+        );
 
         // Detect first achievement.
         if !goal.achieved && current_value >= goal.target_value {
             goal.achieved = true;
             env.storage()
-                .instance()
+                .persistent()
                 .set(&DataKey::MeasurableGoal(goal_id), &goal);
+            env.storage().persistent().extend_ttl(
+                &DataKey::MeasurableGoal(goal_id),
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_BUMP,
+            );
 
             env.events().publish(
                 (Symbol::new(&env, "GoalAchieved"), plan_id),
@@ -1024,7 +1096,7 @@ impl RehabilitationServicesContract {
         // Validate goal belongs to this plan before returning.
         if let Some(goal) = env
             .storage()
-            .instance()
+            .persistent()
             .get::<_, MeasurableGoal>(&DataKey::MeasurableGoal(goal_id))
         {
             if goal.plan_id != plan_id {
@@ -1035,7 +1107,7 @@ impl RehabilitationServicesContract {
         }
 
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::GoalProgressList(goal_id))
             .unwrap_or(Vec::new(&env))
     }
@@ -1043,7 +1115,7 @@ impl RehabilitationServicesContract {
     /// Return a measurable goal by ID.
     pub fn get_measurable_goal(env: Env, goal_id: u64) -> Result<MeasurableGoal, Error> {
         env.storage()
-            .instance()
+            .persistent()
             .get(&DataKey::MeasurableGoal(goal_id))
             .ok_or(Error::NotFound)
     }
@@ -1064,7 +1136,7 @@ impl RehabilitationServicesContract {
         let page_size = page_size.clamp(1, MAX_PAGE_SIZE);
         let all: Vec<TherapySession> = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::TherapySessions(treatment_plan_id))
             .unwrap_or(Vec::new(&env));
         let total = all.len();
@@ -1093,7 +1165,7 @@ impl RehabilitationServicesContract {
         let page_size = page_size.clamp(1, MAX_PAGE_SIZE);
         let all: Vec<ProgressNote> = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::ProgressNotes(treatment_plan_id))
             .unwrap_or(Vec::new(&env));
         let total = all.len();
