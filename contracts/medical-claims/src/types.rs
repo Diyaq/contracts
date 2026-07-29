@@ -33,6 +33,12 @@ pub enum Error {
     InvalidReconciliationAmount = 14,
     /// #527: Insurer credential is expired or revoked in insurer-registry.
     InsurerNotActive = 15,
+    /// #520: Caller is not a registered authorized dispute reviewer.
+    NotAuthorizedReviewer = 16,
+    /// #520: No dispute exists for the given dispute_id.
+    DisputeNotFound = 17,
+    /// #520: Dispute is not in the Open state and cannot be resolved again.
+    DisputeAlreadyResolved = 18,
 }
 
 #[contracttype]
@@ -162,4 +168,12 @@ pub enum DataKey {
     InsurerUnreconciledClaims(Address), // insurer_id -> Vec<u64> of claim_ids
     /// #527: Address of the deployed insurer-registry contract.
     InsurerRegistryId,
+    /// #520: Vec<Address> of addresses authorized to resolve disputes.
+    AuthorizedReviewers,
+    /// #520: Monotonic counter used to allocate dispute ids.
+    DisputeCounter,
+    /// #520: dispute_id -> DisputeRecord.
+    Dispute(u64),
+    /// #520: claim_id -> Vec<u64> of dispute_ids opened against that claim.
+    ClaimDisputes(u64),
 }
