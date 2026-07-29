@@ -250,7 +250,8 @@ fn test_hospital_config_flow() {
         emergency_protocols: protocols.clone(),
     };
 
-    client.set_hospital_config(&hospital_wallet, &config);
+    // Hospital acts as its own caller (caller == wallet).
+    client.set_hospital_config(&hospital_wallet, &hospital_wallet, &config);
 
     let stored = client.get_hospital_config(&hospital_wallet);
     assert_eq!(stored.departments, departments);
@@ -269,7 +270,7 @@ fn test_hospital_config_flow() {
         contact: String::from_str(&env, "cardio@rmc.org"),
     });
 
-    client.update_departments(&hospital_wallet, &updated_departments);
+    client.update_departments(&hospital_wallet, &hospital_wallet, &updated_departments);
     let stored_after = client.get_hospital_config(&hospital_wallet);
     assert_eq!(stored_after.departments, updated_departments);
 }
@@ -286,7 +287,7 @@ fn test_update_departments_exceeds_limit() {
     register_hospital_with_anchor(&env, &client, &hospital_wallet);
 
     // Initialise an empty config so get_hospital_config succeeds inside update_departments
-    client.set_hospital_config(&hospital_wallet, &HospitalConfig {
+    client.set_hospital_config(&hospital_wallet, &hospital_wallet, &HospitalConfig {
         departments: Vec::new(&env),
         locations: Vec::new(&env),
         equipment: Vec::new(&env),
@@ -311,7 +312,7 @@ fn test_update_departments_exceeds_limit() {
         let _ = i;
     }
 
-    let result = client.try_update_departments(&hospital_wallet, &departments);
+    let result = client.try_update_departments(&hospital_wallet, &hospital_wallet, &departments);
     assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
 }
 
@@ -326,7 +327,7 @@ fn test_update_locations_exceeds_limit() {
 
     register_hospital_with_anchor(&env, &client, &hospital_wallet);
 
-    client.set_hospital_config(&hospital_wallet, &HospitalConfig {
+    client.set_hospital_config(&hospital_wallet, &hospital_wallet, &HospitalConfig {
         departments: Vec::new(&env),
         locations: Vec::new(&env),
         equipment: Vec::new(&env),
@@ -351,7 +352,7 @@ fn test_update_locations_exceeds_limit() {
         let _ = i;
     }
 
-    let result = client.try_update_locations(&hospital_wallet, &locations);
+    let result = client.try_update_locations(&hospital_wallet, &hospital_wallet, &locations);
     assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
 }
 
@@ -366,7 +367,7 @@ fn test_update_equipment_exceeds_limit() {
 
     register_hospital_with_anchor(&env, &client, &hospital_wallet);
 
-    client.set_hospital_config(&hospital_wallet, &HospitalConfig {
+    client.set_hospital_config(&hospital_wallet, &hospital_wallet, &HospitalConfig {
         departments: Vec::new(&env),
         locations: Vec::new(&env),
         equipment: Vec::new(&env),
@@ -392,7 +393,7 @@ fn test_update_equipment_exceeds_limit() {
         let _ = i;
     }
 
-    let result = client.try_update_equipment(&hospital_wallet, &equipment);
+    let result = client.try_update_equipment(&hospital_wallet, &hospital_wallet, &equipment);
     assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
 }
 
@@ -417,7 +418,7 @@ fn test_set_hospital_config_exceeds_limits() {
         let _ = i;
     }
 
-    let result = client.try_set_hospital_config(&hospital_wallet, &HospitalConfig {
+    let result = client.try_set_hospital_config(&hospital_wallet, &hospital_wallet, &HospitalConfig {
         departments: Vec::new(&env),
         locations,
         equipment: Vec::new(&env),
@@ -432,4 +433,135 @@ fn test_set_hospital_config_exceeds_limits() {
         emergency_protocols: Vec::new(&env),
     });
     assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
+}
+
+// ── #637 regression: admin-override branch is now reachable ─────────────────
+
+/// The registered admin (not the hospital wallet) must be able to update a
+/// hospital's config — this is the previously-unreachable admin-override path.
+#[test]
+fn test_admin_can_update_hospital_config() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, HospitalRegistry);
+    let client = HospitalRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let hospital_wallet = Address::generate(&env);
+    env.mock_all_auths();
+
+    // Register the admin first.
+    client.initialize_admin(&admin);
+    assert_eq!(client.get_admin(), Some(admin.clone()));
+
+    // Register a hospital.
+    register_hospital_with_anchor(&env, &client, &hospital_wallet);
+
+    // Admin sets config on behalf of the hospital (caller != wallet).
+    let mut departments: Vec<Department> = Vec::new(&env);
+    departments.push_back(Department {
+        name: String::from_str(&env, "Admin-Set Dept"),
+        head: String::from_str(&env, "Dr. Admin"),
+        contact: String::from_str(&env, "admin@health.org"),
+    });
+    let config = HospitalConfig {
+        departments: departments.clone(),
+        locations: Vec::new(&env),
+        equipment: Vec::new(&env),
+        policies: Vec::new(&env),
+        alerts: Vec::new(&env),
+        insurance_providers: Vec::new(&env),
+        billing: BillingConfig {
+            currency: String::from_str(&env, "USD"),
+            payment_terms: String::from_str(&env, "Net 30"),
+            tax_id: String::from_str(&env, "TAX-ADM"),
+        },
+        emergency_protocols: Vec::new(&env),
+    };
+
+    // This must succeed: caller=admin, wallet=hospital_wallet (distinct).
+    client.set_hospital_config(&admin, &hospital_wallet, &config);
+
+    let stored = client.get_hospital_config(&hospital_wallet);
+    assert_eq!(stored.departments, departments);
+}
+
+/// Admin can also use the granular update functions on behalf of any hospital.
+#[test]
+fn test_admin_can_update_departments() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, HospitalRegistry);
+    let client = HospitalRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let hospital_wallet = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.initialize_admin(&admin);
+    register_hospital_with_anchor(&env, &client, &hospital_wallet);
+
+    // Give the hospital an initial empty config.
+    client.set_hospital_config(&hospital_wallet, &hospital_wallet, &HospitalConfig {
+        departments: Vec::new(&env),
+        locations: Vec::new(&env),
+        equipment: Vec::new(&env),
+        policies: Vec::new(&env),
+        alerts: Vec::new(&env),
+        insurance_providers: Vec::new(&env),
+        billing: BillingConfig {
+            currency: String::from_str(&env, ""),
+            payment_terms: String::from_str(&env, ""),
+            tax_id: String::from_str(&env, ""),
+        },
+        emergency_protocols: Vec::new(&env),
+    });
+
+    let mut departments: Vec<Department> = Vec::new(&env);
+    departments.push_back(Department {
+        name: String::from_str(&env, "Neurology"),
+        head: String::from_str(&env, "Dr. Neuro"),
+        contact: String::from_str(&env, "neuro@hospital.org"),
+    });
+
+    // Admin calls update_departments with caller=admin, wallet=hospital_wallet.
+    client.update_departments(&admin, &hospital_wallet, &departments);
+
+    let stored = client.get_hospital_config(&hospital_wallet);
+    assert_eq!(stored.departments, departments);
+}
+
+/// A random address that is neither the hospital nor the admin must be rejected.
+#[test]
+fn test_unauthorized_caller_rejected() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, HospitalRegistry);
+    let client = HospitalRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let hospital_wallet = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.initialize_admin(&admin);
+    register_hospital_with_anchor(&env, &client, &hospital_wallet);
+
+    // Give the hospital an initial empty config.
+    client.set_hospital_config(&hospital_wallet, &hospital_wallet, &HospitalConfig {
+        departments: Vec::new(&env),
+        locations: Vec::new(&env),
+        equipment: Vec::new(&env),
+        policies: Vec::new(&env),
+        alerts: Vec::new(&env),
+        insurance_providers: Vec::new(&env),
+        billing: BillingConfig {
+            currency: String::from_str(&env, ""),
+            payment_terms: String::from_str(&env, ""),
+            tax_id: String::from_str(&env, ""),
+        },
+        emergency_protocols: Vec::new(&env),
+    });
+
+    let departments: Vec<Department> = Vec::new(&env);
+    // attacker is not the hospital and not the admin.
+    let result = client.try_update_departments(&attacker, &hospital_wallet, &departments);
+    assert!(result.is_err());
 }
