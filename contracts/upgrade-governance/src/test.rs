@@ -362,6 +362,21 @@ fn test_execute_cancelled_proposal_returns_error() {
     assert_eq!(err, Error::Cancelled);
 }
 
+#[test]
+fn test_cancel_approved_proposal_by_non_proposer_returns_error() {
+    let (env, signers, client) = setup(3, 2);
+    let s0 = signers.get(0).unwrap();
+    let s1 = signers.get(1).unwrap();
+    let s2 = signers.get(2).unwrap();
+    let metadata = release_metadata(&env);
+    let metadata_hash = metadata_hash(&env, &metadata);
+    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
+    client.vote_upgrade(&s1, &id);
+    // Proposal is now Approved; s2 (not the proposer) cannot cancel
+    let err = client.try_cancel_upgrade(&s2, &id).unwrap_err().unwrap();
+    assert_eq!(err, Error::NotAuthorized);
+}
+
 // ── execute: under threshold ──────────────────────────────────────────────────
 
 #[test]

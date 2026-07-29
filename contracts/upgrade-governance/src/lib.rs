@@ -487,16 +487,8 @@ impl UpgradeGovernance {
     }
 
     /// Cancel an approved-but-not-yet-executed proposal during the timelock window.
-    ///
-    /// # Cancel-authority model (#630)
-    /// - `Active` proposals (below the approval threshold) can be cancelled by
-    ///   any single signer, since no quorum has committed to them yet.
-    /// - `Approved` proposals (threshold already reached) can only be cancelled
-    ///   unilaterally by the original `proposer`. Any other signer instead casts
-    ///   a cancel vote, and the proposal is only cancelled once a *fresh*
-    ///   threshold of signers (separate from the original approval votes) has
-    ///   voted to cancel it. This prevents a single dissenting signer from
-    ///   vetoing an upgrade the required threshold already approved.
+    /// For Active proposals, any signer may cancel. For Approved proposals, only the
+    /// original proposer may cancel, or a fresh threshold of signers must approve.
     pub fn cancel_upgrade(env: Env, caller: Address, proposal_id: u64) -> Result<(), Error> {
         Self::assert_initialized(&env)?;
         caller.require_auth();
@@ -511,8 +503,14 @@ impl UpgradeGovernance {
         match proposal.status {
             ProposalStatus::Executed => return Err(Error::AlreadyExecuted),
             ProposalStatus::Cancelled => return Err(Error::Cancelled),
-            // Allow cancellation of both Active and Approved proposals.
-            _ => {}
+            ProposalStatus::Approved => {
+                // For Approved proposals, only the original proposer may cancel.
+                let is_proposer = proposal.votes.first().map_or(false, |v| v == &caller);
+                if !is_proposer {
+                    return Err(Error::NotAuthorized);
+                }
+            }
+            ProposalStatus::Active => {}
         }
 
         if proposal.status == ProposalStatus::Approved && caller != proposal.proposer {
