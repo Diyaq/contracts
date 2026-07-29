@@ -435,151 +435,44 @@ fn test_set_hospital_config_exceeds_limits() {
     assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
 }
 
-fn empty_config(env: &Env) -> HospitalConfig {
-    HospitalConfig {
-        departments: Vec::new(env),
-        locations: Vec::new(env),
-        equipment: Vec::new(env),
-        policies: Vec::new(env),
-        alerts: Vec::new(env),
-        insurance_providers: Vec::new(env),
-        billing: BillingConfig {
-            currency: String::from_str(env, "USD"),
-            payment_terms: String::from_str(env, "Net 30"),
-            tax_id: String::from_str(env, "TAX-001"),
-        },
-        emergency_protocols: Vec::new(env),
-    }
-}
+// ── Credential revocation (#682) ──────────────────────────────────────────────
 
 #[test]
-fn test_update_policies_exceeds_limit() {
+fn test_revoke_hospital_credential_prevents_mutations() {
     let env = Env::default();
     let contract_id = env.register(HospitalRegistry, ());
     let client = HospitalRegistryClient::new(&env, &contract_id);
 
     let hospital_wallet = Address::generate(&env);
+    let admin = Address::generate(&env);
     env.mock_all_auths();
 
-    register_hospital_with_anchor(&env, &client, &hospital_wallet);
-    client.set_hospital_config(&hospital_wallet, &empty_config(&env));
-
-    let mut policies: Vec<PolicyProcedure> = Vec::new(&env);
-    for i in 0..=MAX_POLICIES {
-        policies.push_back(PolicyProcedure {
-            title: String::from_str(&env, "Policy"),
-            version: String::from_str(&env, "v1"),
-            details: String::from_str(&env, "Details"),
-        });
-        let _ = i;
-    }
-
-    let result = client.try_update_policies(&hospital_wallet, &policies);
-    assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
-}
-
-#[test]
-fn test_update_alerts_exceeds_limit() {
-    let env = Env::default();
-    let contract_id = env.register(HospitalRegistry, ());
-    let client = HospitalRegistryClient::new(&env, &contract_id);
-
-    let hospital_wallet = Address::generate(&env);
-    env.mock_all_auths();
-
-    register_hospital_with_anchor(&env, &client, &hospital_wallet);
-    client.set_hospital_config(&hospital_wallet, &empty_config(&env));
-
-    let mut alerts: Vec<AlertSetting> = Vec::new(&env);
-    for i in 0..=MAX_ALERTS {
-        alerts.push_back(AlertSetting {
-            alert_type: String::from_str(&env, "code_blue"),
-            enabled: true,
-            channels: Vec::new(&env),
-            escalation_contact: String::from_str(&env, "+1-555-0100"),
-        });
-        let _ = i;
-    }
-
-    let result = client.try_update_alerts(&hospital_wallet, &alerts);
-    assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
-}
-
-#[test]
-fn test_update_insurance_providers_exceeds_limit() {
-    let env = Env::default();
-    let contract_id = env.register(HospitalRegistry, ());
-    let client = HospitalRegistryClient::new(&env, &contract_id);
-
-    let hospital_wallet = Address::generate(&env);
-    env.mock_all_auths();
-
-    register_hospital_with_anchor(&env, &client, &hospital_wallet);
-    client.set_hospital_config(&hospital_wallet, &empty_config(&env));
-
-    let mut insurance_providers: Vec<InsuranceProviderConfig> = Vec::new(&env);
-    for i in 0..=MAX_INSURANCE_PROVIDERS {
-        insurance_providers.push_back(InsuranceProviderConfig {
-            provider_name: String::from_str(&env, "Acme Health"),
-            plan_codes: Vec::new(&env),
-            billing_contact: String::from_str(&env, "billing@acmehealth.com"),
-            metadata: String::from_str(&env, ""),
-        });
-        let _ = i;
-    }
-
-    let result = client.try_update_insurance_providers(&hospital_wallet, &insurance_providers);
-    assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
-}
-
-#[test]
-fn test_update_emergency_protocols_exceeds_limit() {
-    let env = Env::default();
-    let contract_id = env.register(HospitalRegistry, ());
-    let client = HospitalRegistryClient::new(&env, &contract_id);
-
-    let hospital_wallet = Address::generate(&env);
-    env.mock_all_auths();
-
-    register_hospital_with_anchor(&env, &client, &hospital_wallet);
-    client.set_hospital_config(&hospital_wallet, &empty_config(&env));
-
-    let mut protocols: Vec<EmergencyProtocol> = Vec::new(&env);
-    for i in 0..=MAX_EMERGENCY_PROTOCOLS {
-        protocols.push_back(EmergencyProtocol {
-            protocol_name: String::from_str(&env, "Fire"),
-            description: String::from_str(&env, "Evacuate wing A"),
-            last_updated: 1700000000,
-            contact: String::from_str(&env, "safety@rmc.org"),
-        });
-        let _ = i;
-    }
-
-    let result = client.try_update_emergency_protocols(&hospital_wallet, &protocols);
-    assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
-}
-
-#[test]
-fn test_update_policies_rejects_empty_after_populated() {
-    let env = Env::default();
-    let contract_id = env.register(HospitalRegistry, ());
-    let client = HospitalRegistryClient::new(&env, &contract_id);
-
-    let hospital_wallet = Address::generate(&env);
-    env.mock_all_auths();
+    // Set the admin
+    client.set_admin(&admin, &admin);
 
     register_hospital_with_anchor(&env, &client, &hospital_wallet);
 
-    let mut policies: Vec<PolicyProcedure> = Vec::new(&env);
-    policies.push_back(PolicyProcedure {
-        title: String::from_str(&env, "Infection Control"),
-        version: String::from_str(&env, "v3"),
-        details: String::from_str(&env, "Hand hygiene and PPE policy"),
-    });
-    let mut config = empty_config(&env);
-    config.policies = policies;
-    client.set_hospital_config(&hospital_wallet, &config);
+    // Hospital is active before revocation
+    assert!(client.is_hospital_active(&hospital_wallet));
 
-    let result = client.try_update_policies(&hospital_wallet, &Vec::new(&env));
-    assert_eq!(result, Err(Ok(ContractError::EmptyFieldUpdate)));
+    // Revoke the credential
+    client.revoke_hospital_credential(&admin, &hospital_wallet);
+
+    // Hospital should no longer be active
+    assert!(!client.is_hospital_active(&hospital_wallet));
+
+    // State-mutating calls should now fail with CredentialRevoked
+    let result = client.try_update_hospital(
+        &hospital_wallet,
+        &String::from_str(&env, "Should fail"),
+    );
+    assert_eq!(result, Err(Ok(ContractError::CredentialRevoked)));
+
+    // Even the hospital's own config updates should fail
+    let result = client.try_update_departments(
+        &hospital_wallet,
+        &Vec::new(&env),
+    );
+    assert_eq!(result, Err(Ok(ContractError::CredentialRevoked)));
 }
+

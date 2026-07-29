@@ -79,6 +79,8 @@ pub struct AuthorizationRequest {
     pub reviewer_role: Option<Symbol>,
     pub sla_deadline: u64,
     pub auto_review_eligible: bool,
+    /// The insurer this request was submitted against (#684).
+    pub insurer_id: Address,
 }
 
 /// Summary view returned by get_authorization_status.
