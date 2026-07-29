@@ -277,14 +277,16 @@ impl EmergencyMedicalInfo {
     }
 
     /// Record DNR (Do Not Resuscitate) order
+    /// Requires explicit authorization from both the provider and the patient
     pub fn record_dnr_order(
         env: Env,
         patient_id: Address,
         provider_id: Address,
         dnr_document_hash: BytesN<32>,
         effective_date: u64,
-    ) {
+    ) -> Result<(), Error> {
         provider_id.require_auth();
+        patient_id.require_auth();
 
         let dnr = DNROrder {
             provider_id: provider_id.clone(),
@@ -306,6 +308,38 @@ impl EmergencyMedicalInfo {
             profile.dnr_status = true;
             env.storage().persistent().set(&profile_key, &profile);
         }
+
+        env.events().publish(
+            (Symbol::new(&env, "dnr_recorded"), patient_id.clone()),
+            provider_id,
+        );
+
+        Ok(())
+    }
+
+    /// Revoke a DNR (Do Not Resuscitate) order
+    /// Requires explicit authorization from the patient
+    pub fn revoke_dnr_order(env: Env, patient_id: Address) -> Result<(), Error> {
+        patient_id.require_auth();
+
+        let dnr_key = DataKey::DNROrder(patient_id.clone());
+        env.storage().persistent().remove(&dnr_key);
+
+        // Update profile DNR status
+        let profile_key = DataKey::EmergencyProfile(patient_id.clone());
+        if let Some(mut profile) = env
+            .storage()
+            .persistent()
+            .get::<_, EmergencyProfile>(&profile_key)
+        {
+            profile.dnr_status = false;
+            env.storage().persistent().set(&profile_key, &profile);
+        }
+
+        env.events()
+            .publish((Symbol::new(&env, "dnr_revoked"), patient_id), ());
+
+        Ok(())
     }
 
     /// Get emergency information (fast read access)
@@ -463,10 +497,50 @@ impl EmergencyMedicalInfo {
                 .persistent()
                 .get(&old_profile_key)
                 .ok_or(Error::EmergencyProfileNotFound)?;
+
+            let old_dnr_key = DataKey::DNROrder(patient_id.clone());
+            let old_alerts_key = DataKey::CriticalAlerts(patient_id.clone());
+            let old_access_log_key = DataKey::EmergencyAccessLog(patient_id.clone());
+
+            let dnr: Option<DNROrder> = env.storage().persistent().get(&old_dnr_key);
+            let alerts: Option<Vec<CriticalAlert>> =
+                env.storage().persistent().get(&old_alerts_key);
+            let access_logs: Option<Vec<EmergencyAccessLog>> =
+                env.storage().persistent().get(&old_access_log_key);
+
+            // Migrate all related data to the new owner key before removing
+            // any old keys, so a failure partway through never orphans data.
             env.storage()
                 .persistent()
                 .set(&DataKey::EmergencyProfile(new_owner.clone()), &profile);
+            if let Some(dnr) = &dnr {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::DNROrder(new_owner.clone()), dnr);
+            }
+            if let Some(alerts) = &alerts {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::CriticalAlerts(new_owner.clone()), alerts);
+            }
+            if let Some(access_logs) = &access_logs {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::EmergencyAccessLog(new_owner.clone()), access_logs);
+            }
+
+            // Only remove old keys after all migrations above have succeeded.
             env.storage().persistent().remove(&old_profile_key);
+            if dnr.is_some() {
+                env.storage().persistent().remove(&old_dnr_key);
+            }
+            if alerts.is_some() {
+                env.storage().persistent().remove(&old_alerts_key);
+            }
+            if access_logs.is_some() {
+                env.storage().persistent().remove(&old_access_log_key);
+            }
+
             env.storage().temporary().remove(&proposal_key);
             env.events()
                 .publish((Symbol::new(&env, "recovered"), patient_id), new_owner);

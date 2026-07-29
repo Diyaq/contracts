@@ -11,6 +11,15 @@
 //! Patient, Insurer, Auditor, Provider, PayerReviewer, EmergencyResponder). Expiring role assignments,
 //! entity registration validation, and composite uniqueness indexes prevent unauthorized access.
 //!
+//! **Role Hierarchy:** `grant_role` only succeeds if the granter's highest active role level is
+//! strictly greater than the target role's level (see `role_level`). Levels, high to low:
+//! the literal contract admin address (5, unconditional) > Admin / EmergencyResponder (4) >
+//! Doctor / PayerReviewer (3) > Nurse / Auditor (2) > Provider / Insurer / Patient (1).
+//! EmergencyResponder and PayerReviewer sit at the top alongside Admin/Doctor because they unlock
+//! high-trust powers — an unsuppressible 1-hour emergency data-access override, and the ability to
+//! revoke any grantor's access permissions, respectively — that must never be mintable by a
+//! Nurse-level (or lower) account.
+//!
 //! **Audit Controls:** Monotonic operation IDs (op_id) track every access grant, revocation, consent,
 //! and emergency access event. Events published: grant, revoke, consent, revoke_consent, did_aud,
 //! emergency_access, deactivate, role_grant, role_revoke. Audit systems can replay events for
@@ -68,6 +77,8 @@ pub enum ContractError {
     CommitExpired = 25,
     /// The batch of role assignments exceeds the maximum allowed size.
     BatchTooLarge = 26,
+    /// #625: grantor or grantee entity has been deactivated via `deactivate_entity`.
+    EntityInactive = 27,
 }
 
 /// Maximum number of access permissions a single grantee may accumulate.
@@ -373,8 +384,14 @@ impl AccessControl {
     /// Grant `role` to `grantee`. The grantor must hold the `Admin` role **or**
     /// hold a role whose level is strictly higher than the role being granted.
     ///
-    /// Role hierarchy (higher value = more privileged):
-    ///   Admin(4) > Doctor(3) > Nurse(2) > Patient/Insurer/Auditor/Provider/... (1)
+    /// Role hierarchy (higher value = more privileged), see `role_level`:
+    ///   Admin(4) = EmergencyResponder(4) > Doctor(3) = PayerReviewer(3) >
+    ///   Nurse(2) = Auditor(2) > Provider/Insurer/Patient(1)
+    ///
+    /// Note: because the check is strict (`>`), only the literal contract admin
+    /// address (treated as level 5) can grant a level-4 role such as
+    /// `EmergencyResponder` — holding `Admin` or `EmergencyResponder` itself is
+    /// not sufficient to grant another level-4 role.
     ///
     /// # Arguments
     /// * `granter`    - Must hold a role with level > role_level(role).
@@ -575,22 +592,26 @@ impl AccessControl {
             Self::verify_and_consume_commit(&env, &grantor, &grantee, &resource_id, n)?;
         }
 
-        // Verify grantor is a registered entity
-        if !env
+        // Verify grantor is a registered, active entity (#625: a deactivated
+        // entity must not be able to keep granting access).
+        let grantor_entity: EntityData = env
             .storage()
             .persistent()
-            .has(&DataKey::Entity(grantor.clone()))
-        {
-            return Err(ContractError::GrantorNotRegistered);
+            .get(&DataKey::Entity(grantor.clone()))
+            .ok_or(ContractError::GrantorNotRegistered)?;
+        if !grantor_entity.active {
+            return Err(ContractError::EntityInactive);
         }
 
-        // Verify grantee is a registered entity
-        if !env
+        // Verify grantee is a registered, active entity (#625: a deactivated
+        // entity must not be able to keep receiving access).
+        let grantee_entity: EntityData = env
             .storage()
             .persistent()
-            .has(&DataKey::Entity(grantee.clone()))
-        {
-            return Err(ContractError::GranteeNotRegistered);
+            .get(&DataKey::Entity(grantee.clone()))
+            .ok_or(ContractError::GranteeNotRegistered)?;
+        if !grantee_entity.active {
+            return Err(ContractError::EntityInactive);
         }
 
         // #220: composite uniqueness check — (grantor, grantee, resource_id)
@@ -1269,14 +1290,27 @@ impl AccessControl {
     // Internal helpers
     // -----------------------------------------------------------------------
 
-    /// Numeric role level for hierarchy enforcement (#488).
-    /// Higher value = more privileged.  Admin must be strictly highest.
+    /// Numeric role level for hierarchy enforcement (#488, #626).
+    /// Higher value = more privileged. Every role has an explicit level — no
+    /// catch-all — so a newly added `Role` variant must be assigned one here
+    /// deliberately rather than silently falling into the lowest tier.
+    ///
+    /// `EmergencyResponder` and `PayerReviewer` are pinned to the
+    /// Admin/Doctor tier (4/3) because they unlock high-trust powers (an
+    /// unsuppressible emergency data-access override, and the ability to
+    /// revoke any grantor's access permissions) that must not be grantable
+    /// by a Nurse-level account.
     fn role_level(role: &Role) -> u8 {
         match role {
             Role::Admin => 4,
+            Role::EmergencyResponder => 4,
             Role::Doctor => 3,
+            Role::PayerReviewer => 3,
             Role::Nurse => 2,
-            _ => 1,
+            Role::Auditor => 2,
+            Role::Provider => 1,
+            Role::Insurer => 1,
+            Role::Patient => 1,
         }
     }
 

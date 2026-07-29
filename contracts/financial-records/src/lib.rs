@@ -289,6 +289,71 @@ impl FinancialRecordContract {
             .publish((symbol_short!("revoke"), owner, authorized), ());
     }
 
+    pub fn deregister_patient(e: Env, owner: Address) -> Result<(), ContractError> {
+        owner.require_auth();
+
+        // Get the count of records to remove
+        let count: u32 = e
+            .storage()
+            .persistent()
+            .get(&DataKey::RecordCount(owner.clone()))
+            .unwrap_or(0);
+
+        // Remove all FinancialRecord entries
+        for i in 0..count {
+            e.storage()
+                .persistent()
+                .remove(&DataKey::Record(owner.clone(), i));
+        }
+
+        // Remove record count
+        e.storage()
+            .persistent()
+            .remove(&DataKey::RecordCount(owner.clone()));
+
+        // Remove all type indices and type counts
+        for rt in 0..5 {
+            let type_seq: u32 = e
+                .storage()
+                .persistent()
+                .get(&DataKey::TypeCount(owner.clone(), rt))
+                .unwrap_or(0);
+
+            for seq in 0..type_seq {
+                e.storage()
+                    .persistent()
+                    .remove(&DataKey::TypeIndex(owner.clone(), rt, seq));
+            }
+
+            e.storage()
+                .persistent()
+                .remove(&DataKey::TypeCount(owner.clone(), rt));
+        }
+
+        // Remove all date indices and date count
+        let date_seq: u32 = e
+            .storage()
+            .persistent()
+            .get(&DataKey::DateCount(owner.clone()))
+            .unwrap_or(0);
+
+        for seq in 0..date_seq {
+            e.storage()
+                .persistent()
+                .remove(&DataKey::DateIndex(owner.clone(), seq));
+        }
+
+        e.storage()
+            .persistent()
+            .remove(&DataKey::DateCount(owner.clone()));
+
+        // Emit deregistration event
+        e.events()
+            .publish((symbol_short!("pat_dreg"), owner.clone()), symbol_short!("fr_clean"));
+
+        Ok(())
+    }
+
     fn check_access(e: &Env, caller: &Address, owner: &Address) -> Result<(), ContractError> {
         if caller == owner {
             caller.require_auth();

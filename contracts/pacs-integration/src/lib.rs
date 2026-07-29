@@ -185,6 +185,7 @@ impl PacsContract {
             report_hash,
             critical_findings,
             reported_at: env.ledger().timestamp(),
+            critical_finding_acknowledged_at: None,
         };
 
         save_report(&env, &report);
@@ -686,6 +687,94 @@ impl PacsContract {
         }
 
         Err(Error::Unauthorized)
+    }
+
+    /// Acknowledge a critical finding by the ordering provider
+    pub fn acknowledge_critical_finding(
+        env: Env,
+        study_id: u64,
+        provider_id: Address,
+        acknowledged_at: u64,
+    ) -> Result<(), Error> {
+        provider_id.require_auth();
+
+        let study = load_study(&env, study_id).ok_or(Error::NotFound)?;
+
+        // Only ordering provider can acknowledge
+        if study.ordering_provider != provider_id {
+            return Err(Error::Unauthorized);
+        }
+
+        let mut report = load_report(&env, study_id).ok_or(Error::NotFound)?;
+
+        // Only acknowledge if there are critical findings
+        if !report.critical_findings {
+            return Err(Error::InvalidInput);
+        }
+
+        report.critical_finding_acknowledged_at = Some(acknowledged_at);
+        save_report(&env, &report);
+
+        env.events().publish(
+            (symbol_short!("ack_crit"), study_id),
+            (provider_id, acknowledged_at),
+        );
+
+        Ok(())
+    }
+
+    /// List unacknowledged critical findings older than threshold seconds
+    pub fn list_unacknowledged_critical_findings(
+        env: Env,
+        provider_id: Address,
+        threshold_seconds: u64,
+    ) -> Result<Vec<u64>, Error> {
+        provider_id.require_auth();
+
+        let current_time = env.ledger().timestamp();
+        let mut unacknowledged_studies: Vec<u64> = Vec::new(&env);
+
+        // Load all studies for this provider (this is a simplification;
+        // in production we'd need a more efficient indexing strategy)
+        let study_counter: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::StudyCounter)
+            .unwrap_or(0);
+
+        for study_id in 1..=study_counter {
+            if let Some(study) = load_study(&env, study_id) {
+                // Only include studies where this provider is the ordering provider
+                if study.ordering_provider != provider_id {
+                    continue;
+                }
+
+                // Skip if no critical findings
+                if !study.critical_findings {
+                    continue;
+                }
+
+                // Check if there's a report with unacknowledged critical findings
+                if let Some(report) = load_report(&env, study_id) {
+                    if report.critical_findings {
+                        // If not acknowledged or acknowledged after threshold
+                        let is_unacknowledged = if let Some(ack_time) = report.critical_finding_acknowledged_at {
+                            // Acknowledged, but check if it's too old (acknowledged > threshold seconds ago)
+                            current_time > ack_time && (current_time - ack_time) < threshold_seconds
+                        } else {
+                            // Not acknowledged yet
+                            current_time > report.reported_at && (current_time - report.reported_at) > threshold_seconds
+                        };
+
+                        if is_unacknowledged {
+                            unacknowledged_studies.push_back(study_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(unacknowledged_studies)
     }
 }
 

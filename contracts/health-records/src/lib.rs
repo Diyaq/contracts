@@ -211,9 +211,25 @@ impl HealthRecords {
         validate_nonzero_address(&patient).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         patient.require_auth();
-        env.storage()
+        env.storage().persistent().set(
+            &DataKey::Consent(patient.clone(), provider.clone()),
+            &scope,
+        );
+
+        // #627: keep PatientProviders in sync so deregister_patient's consent
+        // cleanup loop actually has providers to iterate over. Dedup on
+        // repeat grants to the same provider.
+        let idx_key = DataKey::PatientProviders(patient.clone());
+        let mut providers: Vec<Address> = env
+            .storage()
             .persistent()
-            .set(&DataKey::Consent(patient, provider), &scope);
+            .get(&idx_key)
+            .unwrap_or(Vec::new(&env));
+        if !providers.iter().any(|p| p == provider) {
+            providers.push_back(provider);
+            env.storage().persistent().set(&idx_key, &providers);
+        }
+
         Ok(())
     }
 
@@ -224,7 +240,27 @@ impl HealthRecords {
         patient.require_auth();
         env.storage()
             .persistent()
-            .remove(&DataKey::Consent(patient, provider));
+            .remove(&DataKey::Consent(patient.clone(), provider.clone()));
+
+        // #627: prune the PatientProviders index entry so it doesn't keep
+        // accumulating providers the patient no longer has any consent
+        // record for.
+        let idx_key = DataKey::PatientProviders(patient.clone());
+        let providers: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&idx_key)
+            .unwrap_or(Vec::new(&env));
+        if providers.iter().any(|p| p == provider) {
+            let mut remaining: Vec<Address> = Vec::new(&env);
+            for p in providers.iter() {
+                if p != provider {
+                    remaining.push_back(p);
+                }
+            }
+            env.storage().persistent().set(&idx_key, &remaining);
+        }
+
         Ok(())
     }
 
