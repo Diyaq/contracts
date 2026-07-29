@@ -209,8 +209,12 @@ impl LiquidityPoolContract {
             .get(&DataKey::TotalShares)
             .unwrap_or(0);
 
-        let out_a = shares * reserve_a / total;
-        let out_b = shares * reserve_b / total;
+        let out_a = shares
+            .checked_mul(reserve_a)
+            .ok_or(Error::ArithmeticOverflow)? / total;
+        let out_b = shares
+            .checked_mul(reserve_b)
+            .ok_or(Error::ArithmeticOverflow)? / total;
 
         env.storage()
             .instance()

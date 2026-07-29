@@ -58,6 +58,35 @@ fn swap_slippage_protection_rejects_bad_trade() {
 }
 
 #[test]
+fn remove_liquidity_overflow_returns_proper_error() {
+    let (env, _, _) = setup();
+    let provider = Address::generate(&env);
+    // Register a fresh contract so we can manipulate storage directly.
+    let contract_id = env.register(LiquidityPoolContract, ());
+    let client = LiquidityPoolContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    // Deposit moderate values so the provider holds shares.
+    let shares = client.add_liquidity(&provider, &2_000_000, &2_000_000);
+
+    // Bypass normal flow: directly pump reserves to huge values via storage manipulation.
+    // With shares = 2_000_000 and reserve_a = i128::MAX, the multiplication overflows.
+    env.as_contract(&contract_id, || {
+        env.storage().instance().set(&DataKey::ReserveA, &i128::MAX);
+        env.storage().instance().set(&DataKey::ReserveB, &i128::MAX);
+        env.storage().instance().set(&DataKey::TotalShares, &shares);
+    });
+
+    // remove_liquidity will compute shares * reserve_a → overflow → ArithmeticOverflow
+    let err = client
+        .try_remove_liquidity(&provider, &shares)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::ArithmeticOverflow);
+}
+
+#[test]
 fn get_shares_tracks_provider_balance() {
     let (_, client, _) = setup();
     let provider = Address::generate(&client.env);
