@@ -1113,3 +1113,159 @@ fn test_deregister_patient_removes_patient_plans_index() {
     });
     assert_eq!(ids.len(), 0);
 }
+
+// ── plan-status guard tests ─────────────────────────────────────────────────
+
+#[test]
+fn test_add_care_goal_after_deregister_patient_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(CarePlanContract, ());
+    let client = CarePlanContractClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+
+    let mut conditions = Vec::new(&env);
+    conditions.push_back(String::from_str(&env, "Hypertension"));
+    let mut goals = Vec::new(&env);
+    goals.push_back(String::from_str(&env, "Lower BP"));
+
+    let plan_id = client.create_care_plan(
+        &patient,
+        &provider,
+        &Symbol::new(&env, "chronic"),
+        &conditions,
+        &goals,
+        &1_000_000u64,
+        &30u32,
+    );
+
+    client.deregister_patient(&patient);
+
+    let result = client.try_add_care_goal(
+        &plan_id,
+        &provider,
+        &String::from_str(&env, "New goal"),
+        &None,
+        &1_100_000u64,
+        &Symbol::new(&env, "high"),
+    );
+    assert_eq!(result, Err(Ok(Error::CarePlanClosed)));
+}
+
+#[test]
+fn test_plan_child_mutators_reject_on_closed_plan() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(CarePlanContract, ());
+    let client = CarePlanContractClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+
+    let mut conditions = Vec::new(&env);
+    conditions.push_back(String::from_str(&env, "Hypertension"));
+    let mut goals = Vec::new(&env);
+    goals.push_back(String::from_str(&env, "Lower BP"));
+
+    let plan_id = client.create_care_plan(
+        &patient,
+        &provider,
+        &Symbol::new(&env, "chronic"),
+        &conditions,
+        &goals,
+        &1_000_000u64,
+        &30u32,
+    );
+
+    client.deregister_patient(&patient); // plan now Discontinued
+
+    let add_intervention = client.try_add_intervention(
+        &plan_id,
+        &provider,
+        &Symbol::new(&env, "medication"),
+        &String::from_str(&env, "Take medication"),
+        &String::from_str(&env, "daily"),
+        &Symbol::new(&env, "patient"),
+    );
+    assert_eq!(add_intervention, Err(Ok(Error::CarePlanClosed)));
+
+    let add_barrier = client.try_add_barrier(
+        &plan_id,
+        &provider,
+        &Symbol::new(&env, "cost"),
+        &String::from_str(&env, "Cannot afford medication"),
+        &1_050_000u64,
+    );
+    assert_eq!(add_barrier, Err(Ok(Error::CarePlanClosed)));
+
+    let schedule_review = client.try_schedule_care_plan_review(
+        &plan_id,
+        &provider,
+        &1_100_000u64,
+        &Symbol::new(&env, "routine"),
+    );
+    assert_eq!(schedule_review, Err(Ok(Error::CarePlanClosed)));
+}
+
+#[test]
+fn test_mark_goal_achieved_and_resolve_barrier_allowed_on_closed_plan() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(CarePlanContract, ());
+    let client = CarePlanContractClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+
+    let mut conditions = Vec::new(&env);
+    conditions.push_back(String::from_str(&env, "Hypertension"));
+    let mut goals = Vec::new(&env);
+    goals.push_back(String::from_str(&env, "Lower BP"));
+
+    let plan_id = client.create_care_plan(
+        &patient,
+        &provider,
+        &Symbol::new(&env, "chronic"),
+        &conditions,
+        &goals,
+        &1_000_000u64,
+        &30u32,
+    );
+
+    let goal_id = client.add_care_goal(
+        &plan_id,
+        &provider,
+        &String::from_str(&env, "Lower BP to <130/80"),
+        &None,
+        &1_100_000u64,
+        &Symbol::new(&env, "high"),
+    );
+    let barrier_id = client.add_barrier(
+        &plan_id,
+        &provider,
+        &Symbol::new(&env, "cost"),
+        &String::from_str(&env, "Cannot afford medication"),
+        &1_050_000u64,
+    );
+
+    client.deregister_patient(&patient); // plan now Discontinued
+
+    // Closing out pre-existing items on a discontinued plan is still allowed.
+    client.mark_goal_achieved(
+        &goal_id,
+        &provider,
+        &1_150_000u64,
+        &String::from_str(&env, "BP normalized before discontinuation"),
+    );
+    client.resolve_barrier(
+        &barrier_id,
+        &provider,
+        &String::from_str(&env, "Financial assistance arranged"),
+        &1_150_000u64,
+    );
+}

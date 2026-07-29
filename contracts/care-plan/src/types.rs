@@ -18,6 +18,7 @@ pub enum Error {
     GoalDiscontinued = 8,
     BarrierAlreadyResolved = 9,
     ReviewAlreadyConducted = 10,
+    CarePlanClosed = 11,
 }
 
 // -----------------------------------------------------------------------

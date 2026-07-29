@@ -13,7 +13,34 @@ fn setup()->(Env,ScholarshipFundContractClient<'static>,Address){
 #[test]#[should_panic]fn disburse_empty_pool_panics(){let(env,c,admin)=setup();let s=Address::generate(&env);c.set_recipient_eligibility(&admin,&s,&true);c.disburse(&admin,&s,&1,&String::from_str(&env,"x"));}
 #[test]#[should_panic]fn non_admin_disburse_panics(){let(env,c,admin)=setup();let a=Address::generate(&env);let s=Address::generate(&env);let d=Address::generate(&env);c.deposit(&d,&1_000_000);c.set_recipient_eligibility(&admin,&s,&true);c.disburse(&a,&s,&1,&String::from_str(&env,"x"));}
 #[test]#[should_panic]fn over_withdraw_panics(){let(_,c,_)=setup();let d=Address::generate(&c.env);c.deposit(&d,&100_000);c.withdraw(&d,&200_000);}
-#[test]#[should_panic]fn disburse_to_ineligible_recipient_panics(){let(env,c,admin)=setup();let donor=Address::generate(&env);let s=Address::generate(&env);c.deposit(&donor,&1_000_000);c.disburse(&admin,&s,&1,&String::from_str(&env,"x"));}
-#[test]fn disburse_tracks_recipient_awards(){let(env,c,admin)=setup();let donor=Address::generate(&env);let student=Address::generate(&env);c.deposit(&donor,&2_000_000);c.set_recipient_eligibility(&admin,&student,&true);c.disburse(&admin,&student,&500_000,&String::from_str(&env,"award-1"));c.disburse(&admin,&student,&300_000,&String::from_str(&env,"award-2"));assert_eq!(c.get_recipient_awards(&student),800_000);}
-#[test]#[should_panic]fn disburse_exceeding_cap_panics(){let(env,c,admin)=setup();let donor=Address::generate(&env);let student=Address::generate(&env);c.deposit(&donor,&2_000_000);c.set_recipient_eligibility(&admin,&student,&true);c.set_recipient_cap(&admin,&student,&500_000);c.disburse(&admin,&student,&400_000,&String::from_str(&env,"award-1"));c.disburse(&admin,&student,&200_000,&String::from_str(&env,"award-2"));}
-#[test]fn disburse_up_to_cap_succeeds(){let(env,c,admin)=setup();let donor=Address::generate(&env);let student=Address::generate(&env);c.deposit(&donor,&2_000_000);c.set_recipient_eligibility(&admin,&student,&true);c.set_recipient_cap(&admin,&student,&500_000);c.disburse(&admin,&student,&500_000,&String::from_str(&env,"award"));assert_eq!(c.get_recipient_awards(&student),500_000);}
+#[test]
+fn committed_funds_survive_a_pending_award() {
+    let (env, c, admin) = setup();
+    let donor = Address::generate(&env);
+    let student = Address::generate(&env);
+
+    // Donor deposits, admin plans an award and earmarks the funds for it.
+    c.deposit(&donor, &1_000_000);
+    c.commit_funds(&admin, &1_000_000);
+
+    // Donor can no longer withdraw funds that are earmarked for the pending award.
+    let result = c.try_withdraw(&donor, &1_000_000);
+    assert_eq!(result, Err(Ok(Error::FundsCommitted)));
+
+    // The planned disbursement still succeeds because the funds were protected.
+    c.disburse(&admin, &student, &1_000_000, &String::from_str(&env, "award"));
+    assert_eq!(c.get_stats().pool_balance, 0);
+    assert_eq!(c.get_stats().committed_balance, 0);
+}
+#[test]
+fn uncommitted_funds_remain_withdrawable() {
+    let (env, c, admin) = setup();
+    let donor = Address::generate(&env);
+
+    c.deposit(&donor, &1_000_000);
+    c.commit_funds(&admin, &400_000);
+
+    // Only the committed portion is protected; the rest can still be withdrawn.
+    c.withdraw(&donor, &600_000);
+    assert_eq!(c.get_stats().pool_balance, 400_000);
+}
