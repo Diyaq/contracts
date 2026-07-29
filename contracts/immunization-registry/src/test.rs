@@ -163,3 +163,92 @@ fn test_vaccine_series_and_due() {
     let due3 = client.check_due_vaccines(&patient_id, &patient_id, &1700000000);
     assert_eq!(due3.len(), 0);
 }
+
+#[test]
+fn test_reject_zero_dose_number() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ImmunizationRegistry, ());
+    let client = ImmunizationRegistryClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    let result = client.try_record_immunization(&VaccineRecord {
+        patient_id,
+        provider_id,
+        vaccine_name: String::from_str(&env, "Hepatitis B"),
+        cvx_code: String::from_str(&env, "CVX_43"),
+        lot_number: String::from_str(&env, "LOT_12345"),
+        manufacturer: String::from_str(&env, "SANOFI"),
+        administration_date: 1690000000,
+        expiration_date: 1790000000,
+        dose_number: 0,
+        route: Symbol::new(&env, "IM"),
+        site: Symbol::new(&env, "DELTOID"),
+    });
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_reject_expired_vaccine() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ImmunizationRegistry, ());
+    let client = ImmunizationRegistryClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    // administration_date after expiration_date
+    let result = client.try_record_immunization(&VaccineRecord {
+        patient_id,
+        provider_id,
+        vaccine_name: String::from_str(&env, "Hepatitis B"),
+        cvx_code: String::from_str(&env, "CVX_43"),
+        lot_number: String::from_str(&env, "LOT_12345"),
+        manufacturer: String::from_str(&env, "SANOFI"),
+        administration_date: 1800000000,
+        expiration_date: 1790000000,
+        dose_number: 1,
+        route: Symbol::new(&env, "IM"),
+        site: Symbol::new(&env, "DELTOID"),
+    });
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_reject_future_administration_date() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ImmunizationRegistry, ());
+    let client = ImmunizationRegistryClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    // Get current ledger timestamp
+    let current_time = env.ledger().timestamp();
+
+    // administration_date in the future
+    let result = client.try_record_immunization(&VaccineRecord {
+        patient_id,
+        provider_id,
+        vaccine_name: String::from_str(&env, "Hepatitis B"),
+        cvx_code: String::from_str(&env, "CVX_43"),
+        lot_number: String::from_str(&env, "LOT_12345"),
+        manufacturer: String::from_str(&env, "SANOFI"),
+        administration_date: current_time + 1000,
+        expiration_date: current_time + 100000,
+        dose_number: 1,
+        route: Symbol::new(&env, "IM"),
+        site: Symbol::new(&env, "DELTOID"),
+    });
+
+    assert!(result.is_err());
+}

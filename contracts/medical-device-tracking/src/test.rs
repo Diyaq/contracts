@@ -465,6 +465,89 @@ fn test_remove_implant_already_inactive() {
 }
 
 #[test]
+fn test_remove_implant_rejects_unauthorized_provider() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = setup_client(&env);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    let other_provider = Address::generate(&env);
+    let manufacturer = Address::generate(&env);
+
+    let device_id = register_device_helper(&env, &client, &manufacturer);
+    let implant_id = client.implant_device(
+        &patient_id,
+        &device_id,
+        &provider_id,
+        &1700000000u64,
+        &String::from_str(&env, "Shoulder"),
+        &dummy_hash(&env),
+    );
+
+    // A provider who did not perform the implant attempts removal.
+    let res = client.try_remove_implant(
+        &implant_id,
+        &other_provider,
+        &1750000000u64,
+        &String::from_str(&env, "Unauthorized removal attempt"),
+        &None,
+    );
+    assert_eq!(res.unwrap_err().unwrap(), Error::NotAuthorized);
+}
+
+#[test]
+fn test_falsely_removed_implant_cannot_suppress_recall_notification() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = setup_client(&env);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    let other_provider = Address::generate(&env);
+    let manufacturer = Address::generate(&env);
+
+    let device_id = register_device_helper(&env, &client, &manufacturer);
+    let implant_id = client.implant_device(
+        &patient_id,
+        &device_id,
+        &provider_id,
+        &1700000000u64,
+        &String::from_str(&env, "Chest"),
+        &dummy_hash(&env),
+    );
+
+    // Unauthorized removal attempt must fail and not affect the implant.
+    let res = client.try_remove_implant(
+        &implant_id,
+        &other_provider,
+        &1740000000u64,
+        &String::from_str(&env, "Malicious removal"),
+        &None,
+    );
+    assert!(res.is_err());
+
+    let mut device_ids: Vec<u64> = Vec::new(&env);
+    device_ids.push_back(device_id);
+
+    let recall_id = client.issue_device_recall(
+        &manufacturer,
+        &device_ids,
+        &String::from_str(&env, "Battery failure risk"),
+        &Symbol::new(&env, "HIGH"),
+        &1750000000u64,
+        &String::from_str(&env, "Immediate replacement required"),
+    );
+
+    // The patient must still be surfaced for recall notification.
+    let affected = client.notify_affected_patients(&recall_id, &1750100000u64);
+    assert_eq!(affected.len(), 1);
+    assert!(affected.contains(patient_id));
+}
+
+#[test]
 fn test_track_device_performance_no_complications() {
     let env = Env::default();
     env.mock_all_auths();
@@ -706,4 +789,41 @@ fn test_regulator_emergency_recall_records_scope() {
         recall.emergency_scope,
         Some(String::from_str(&env, "national-device-hold"))
     );
+}
+
+#[test]
+fn test_track_device_performance_patient_mismatch() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = setup_client(&env);
+
+    let patient_a = Address::generate(&env);
+    let patient_b = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    let manufacturer = Address::generate(&env);
+
+    let device_id = register_device_helper(&env, &client, &manufacturer);
+
+    // Implant device for patient_a
+    let implant_id = client.implant_device(
+        &patient_a,
+        &device_id,
+        &provider_id,
+        &1700000000u64,
+        &String::from_str(&env, "Left Hip"),
+        &dummy_hash(&env),
+    );
+
+    // Patient B attempts to file performance report for Patient A's implant
+    let result = client.try_track_device_performance(
+        &implant_id,
+        &patient_b,
+        &dummy_hash(&env),
+        &1700086400u64,
+        &None,
+    );
+
+    // Should fail with NotAuthorized error
+    assert!(result.is_err());
 }

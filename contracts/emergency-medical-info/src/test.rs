@@ -325,6 +325,58 @@ fn test_guardian_threshold_rekeys_emergency_profile() {
 }
 
 #[test]
+fn test_recovery_migrates_dnr_order_and_critical_alerts() {
+    let env = Env::default();
+    let contract_id = env.register(EmergencyMedicalInfo, ());
+    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let contact = Address::generate(&env);
+    let guardian_1 = Address::generate(&env);
+    let guardian_2 = Address::generate(&env);
+    let new_owner = Address::generate(&env);
+    let provider = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.set_emergency_profile(
+        &patient,
+        &Symbol::new(&env, "AB_NEG"),
+        &Vec::new(&env),
+        &Vec::new(&env),
+        &Vec::new(&env),
+        &create_test_emergency_contacts(&env),
+        &None,
+    );
+
+    client.record_dnr_order(&patient, &provider, &hash(&env, 33), &1700000000u64);
+    client.add_critical_alert(
+        &patient,
+        &provider,
+        &Symbol::new(&env, "CARDIAC"),
+        &hash(&env, 44),
+        &Symbol::new(&env, "HIGH"),
+    );
+
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian_1.clone());
+    guardians.push_back(guardian_2.clone());
+    client.set_recovery_config(&patient, &contact, &guardians, &2);
+
+    client.propose_recovery(&patient, &guardian_1, &new_owner);
+    client.propose_recovery(&patient, &guardian_2, &new_owner);
+
+    assert!(!client.has_emergency_profile(&patient));
+    assert!(client.has_emergency_profile(&new_owner));
+
+    let dnr = client.get_dnr_order(&new_owner, &new_owner).unwrap();
+    assert_eq!(dnr.dnr_document_hash, hash(&env, 33));
+
+    let alerts = client.get_critical_alerts(&new_owner, &new_owner);
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts.get(0).unwrap().alert_text_hash, hash(&env, 44));
+}
+
+#[test]
 fn test_dnr_with_advance_directives() {
     let env = Env::default();
     let contract_id = env.register(EmergencyMedicalInfo, ());
