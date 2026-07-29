@@ -1,5 +1,5 @@
 use shared_contracts::safe_increment;
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{Address, BytesN, Env, Vec};
 
 use crate::{
     AdverseEventReport, ClinicalTrial, DataKey, EligibilityCriteria, Error,
@@ -285,4 +285,18 @@ pub fn get_amendment_log(env: &Env, trial_record_id: u64) -> Vec<ProtocolAmendme
         .persistent()
         .get(&DataKey::AmendmentLog(trial_record_id))
         .unwrap_or(Vec::new(env))
+}
+
+/// Set the current informed-consent document hash for a trial.
+pub fn set_consent_version(env: &Env, trial_record_id: u64, consent_hash: &BytesN<32>) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::ConsentVersion(trial_record_id), consent_hash);
+}
+
+/// Get the current informed-consent document hash for a trial, if one has been set.
+pub fn get_consent_version(env: &Env, trial_record_id: u64) -> Option<BytesN<32>> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ConsentVersion(trial_record_id))
 }
