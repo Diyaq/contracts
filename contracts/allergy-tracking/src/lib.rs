@@ -130,6 +130,8 @@ pub enum DataKey {
     PatientAllergies(Address),
     SeverityHistory(u64),
     DrugCrossSensitivity(String),
+    AccessControl(Address, Address),
+    GrantedProviders(Address),
 }
 
 /// A single entry in a batch allergy recording request.
@@ -541,6 +543,47 @@ impl AllergyTrackingContract {
         Ok(())
     }
 
+    /// Grant a provider access to a patient's allergy records. Only the patient can grant.
+    pub fn grant_access(env: Env, patient_id: Address, provider_id: Address) {
+        patient_id.require_auth();
+
+        let key = DataKey::AccessControl(patient_id.clone(), provider_id.clone());
+        env.storage().persistent().set(&key, &true);
+
+        let index_key = DataKey::GrantedProviders(patient_id.clone());
+        let mut providers: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&index_key)
+            .unwrap_or(Vec::new(&env));
+        if !Self::vec_contains_address(&providers, &provider_id) {
+            providers.push_back(provider_id);
+            env.storage().persistent().set(&index_key, &providers);
+        }
+    }
+
+    /// Revoke a previously granted provider's access. Only the patient can revoke.
+    pub fn revoke_access(env: Env, patient_id: Address, provider_id: Address) {
+        patient_id.require_auth();
+
+        let key = DataKey::AccessControl(patient_id.clone(), provider_id.clone());
+        env.storage().persistent().remove(&key);
+
+        let index_key = DataKey::GrantedProviders(patient_id.clone());
+        let providers: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&index_key)
+            .unwrap_or(Vec::new(&env));
+        let mut updated: Vec<Address> = Vec::new(&env);
+        for p in providers.iter() {
+            if p != provider_id {
+                updated.push_back(p);
+            }
+        }
+        env.storage().persistent().set(&index_key, &updated);
+    }
+
     /// Check for drug allergy interactions
     pub fn check_drug_allergy_interaction(
         env: Env,
@@ -549,6 +592,9 @@ impl AllergyTrackingContract {
         drug_name: String,
     ) -> Result<Vec<InteractionWarning>, Error> {
         requester.require_auth();
+        if !Self::check_access(&env, &patient_id, &requester) {
+            return Err(Error::Unauthorized);
+        }
         let patient_key = DataKey::PatientAllergies(patient_id.clone());
         let patient_allergies: Vec<u64> = env
             .storage()
@@ -609,6 +655,9 @@ impl AllergyTrackingContract {
         requester: Address,
     ) -> Result<Vec<AllergyRecord>, Error> {
         requester.require_auth();
+        if !Self::check_access(&env, &patient_id, &requester) {
+            return Err(Error::Unauthorized);
+        }
 
         let patient_key = DataKey::PatientAllergies(patient_id);
         let patient_allergies: Vec<u64> = env
@@ -662,7 +711,9 @@ impl AllergyTrackingContract {
     }
 
     /// Get a specific record by ID. Soft-deleted records are treated as not found.
-    pub fn get_record(env: Env, record_id: u64) -> Result<AllergyRecord, Error> {
+    pub fn get_record(env: Env, record_id: u64, requester: Address) -> Result<AllergyRecord, Error> {
+        requester.require_auth();
+
         let allergy: AllergyRecord = env
             .storage()
             .persistent()
@@ -671,6 +722,10 @@ impl AllergyTrackingContract {
 
         if allergy.is_deleted {
             return Err(Error::AllergyNotFound);
+        }
+
+        if !Self::check_access(&env, &allergy.patient_id, &requester) {
+            return Err(Error::Unauthorized);
         }
 
         Ok(allergy)
@@ -688,6 +743,9 @@ impl AllergyTrackingContract {
         requester.require_auth();
 
         if include_deleted && !Self::is_admin(&env, &requester) {
+            return Err(Error::Unauthorized);
+        }
+        if !Self::check_access(&env, &patient_id, &requester) {
             return Err(Error::Unauthorized);
         }
 
@@ -716,8 +774,8 @@ impl AllergyTrackingContract {
     }
 
     /// Get a specific allergy record
-    pub fn get_allergy(env: Env, allergy_id: u64) -> Result<AllergyRecord, Error> {
-        Self::get_record(env, allergy_id)
+    pub fn get_allergy(env: Env, allergy_id: u64, requester: Address) -> Result<AllergyRecord, Error> {
+        Self::get_record(env, allergy_id, requester)
     }
 
     /// Get severity update history for an allergy
@@ -879,6 +937,29 @@ impl AllergyTrackingContract {
     }
 
     fn vec_contains(vec: &Vec<String>, item: &String) -> bool {
+        for v in vec.iter() {
+            if v == *item {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check whether `requester` is allowed to read `patient_id`'s records:
+    /// the patient themselves, the contract admin, or a provider the patient
+    /// has explicitly granted access to via `grant_access`.
+    fn check_access(env: &Env, patient_id: &Address, requester: &Address) -> bool {
+        if patient_id == requester {
+            return true;
+        }
+        if Self::is_admin(env, requester) {
+            return true;
+        }
+        let key = DataKey::AccessControl(patient_id.clone(), requester.clone());
+        env.storage().persistent().has(&key)
+    }
+
+    fn vec_contains_address(vec: &Vec<Address>, item: &Address) -> bool {
         for v in vec.iter() {
             if v == *item {
                 return true;

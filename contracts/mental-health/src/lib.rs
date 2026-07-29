@@ -54,6 +54,8 @@ pub enum Error {
     RequiresExplicitConsent = 3,
     /// Cross-contract escalation call to emergency-medical-info failed
     EscalationFailed = 4,
+    /// Screening total_score is outside the clinical instrument's valid range
+    InvalidScore = 5,
 }
 
 #[contracttype]
@@ -173,6 +175,9 @@ pub enum DataKey {
     PlanCounter,
     HospitalizationCounter,
     ScreeningCounter,
+    SessionCounter,
+    SymptomCounter,
+    OutcomeCounter,
     Assessment(u64),
     TreatmentPlan(u64),
     Hospitalization(u64),
@@ -180,11 +185,23 @@ pub enum DataKey {
     Screening(u64),
     PrivacyFlag(Address, Symbol),
     Session(u64, u64),
-    Symptom(Address, Symbol, u64),
+    Symptom(u64), // Unique symptom record id (#681)
     Outcomes(u64, u64),
+    /// Per-day session list for deduplication (#681)
+    SessionDay(u64, u64), // (treatment_plan_id, date) -> Vec<session_id>
+    /// Per-day symptom list (#681)
+    SymptomDay(Address, Symbol, u64), // (patient_id, symptom_type, date) -> Vec<symptom_id>
+    /// Per-day outcomes list (#681)
+    OutcomeDay(u64, u64), // (treatment_plan_id, date) -> Vec<outcome_id>
     Consent(Address, Symbol, Address),
     /// Address of the emergency-medical-info contract for crisis escalation
     EmergencyContractAddress,
+    /// Auto-incrementing counter for pseudonym IDs
+    PseudonymCounter,
+    /// Mapping from pseudonym address to real patient address
+    PseudonymMapping(Address),
+    /// Authorized address that can resolve pseudonyms (e.g. emergency-medical-info contract)
+    AuthorizedResolver(Address),
 }
 
 #[contract]
@@ -241,11 +258,32 @@ impl MentalHealthContract {
         }
 
         let patient_token = if privacy_flagged {
-            // Derive a de-identified patient token via SHA-256
-            let patient_bytes = patient_id.clone().to_xdr(env);
-            let hash: [u8; 32] = env.crypto().sha256(&patient_bytes).into();
-            let salt = BytesN::<32>::from_array(env, &hash);
-            env.deployer().with_current_contract(salt).deployed_address()
+            // Generate a unique pseudonym ID
+            let pseudonym_counter: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::PseudonymCounter)
+                .unwrap_or(0);
+            let next_id = pseudonym_counter + 1;
+            env.storage()
+                .instance()
+                .set(&DataKey::PseudonymCounter, &next_id);
+
+            // Derive a deterministic pseudonym address from the counter
+            let pseudo_bytes = BytesN::from_array(env, &env.crypto().sha256(
+                &next_id.to_xdr(env),
+            ).into());
+            let salt = pseudo_bytes;
+            let pseudonym_address =
+                env.deployer().with_current_contract(salt).deployed_address();
+
+            // Register the mapping so authorized resolvers can reverse it
+            env.storage().persistent().set(
+                &DataKey::PseudonymMapping(pseudonym_address.clone()),
+                patient_id,
+            );
+
+            pseudonym_address
         } else {
             patient_id.clone()
         };
@@ -371,10 +409,17 @@ impl MentalHealthContract {
     pub fn record_phq9_score(
         env: Env,
         assessment_id: u64,
+        provider_id: Address,
         total_score: u32,
         _item_scores: Vec<u32>,
         _assessment_date: u64,
     ) -> Result<(), Error> {
+        provider_id.require_auth();
+
+        if total_score > 27 {
+            return Err(Error::InvalidScore);
+        }
+
         let mut assessment: MentalHealthAssessment = env
             .storage()
             .persistent()
@@ -392,10 +437,17 @@ impl MentalHealthContract {
     pub fn record_gad7_score(
         env: Env,
         assessment_id: u64,
+        provider_id: Address,
         total_score: u32,
         _item_scores: Vec<u32>,
         _assessment_date: u64,
     ) -> Result<(), Error> {
+        provider_id.require_auth();
+
+        if total_score > 21 {
+            return Err(Error::InvalidScore);
+        }
+
         let mut assessment: MentalHealthAssessment = env
             .storage()
             .persistent()
@@ -571,12 +623,14 @@ impl MentalHealthContract {
         interventions_used: Vec<String>,
         progress_notes_hash: BytesN<32>,
         homework_assigned: Option<String>,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let plan: TreatmentPlan = env
             .storage()
             .persistent()
             .get(&DataKey::TreatmentPlan(treatment_plan_id))
             .ok_or(Error::NotFound)?;
+
+        plan.provider_id.require_auth();
 
         Self::validate_explicit_consent(
             &env,
@@ -584,6 +638,14 @@ impl MentalHealthContract {
             Symbol::new(&env, "therapy_session"),
             &plan.provider_id,
         )?;
+
+        // Use a counter for unique session IDs instead of date-only key (#681)
+        let mut count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SessionCounter)
+            .unwrap_or(0);
+        count += 1;
 
         let session = TherapySession {
             treatment_plan_id,
@@ -597,14 +659,29 @@ impl MentalHealthContract {
 
         env.storage()
             .persistent()
-            .set(&DataKey::Session(treatment_plan_id, session_date), &session);
+            .set(&DataKey::Session(treatment_plan_id, count), &session);
+
+        // Append session ID to per-day list for deduplication / enumeration
+        let mut day_list: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SessionDay(treatment_plan_id, session_date))
+            .unwrap_or(Vec::new(&env));
+        day_list.push_back(count);
+        env.storage()
+            .persistent()
+            .set(&DataKey::SessionDay(treatment_plan_id, session_date), &day_list);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::SessionCounter, &count);
 
         env.events().publish(
             (Symbol::new(&env, "session_recorded"), treatment_plan_id),
             plan.patient_id,
         );
 
-        Ok(())
+        Ok(count)
     }
 
     pub fn track_symptom_severity(
@@ -615,7 +692,7 @@ impl MentalHealthContract {
         severity_score: u32,
         measurement_date: u64,
         measurement_tool: Symbol,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         provider_id.require_auth();
 
         Self::validate_explicit_consent(
@@ -624,6 +701,14 @@ impl MentalHealthContract {
             Symbol::new(&env, "symptom_severity"),
             &provider_id,
         )?;
+
+        // Use a counter for unique symptom record IDs instead of date-only key (#681)
+        let mut count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SymptomCounter)
+            .unwrap_or(0);
+        count += 1;
 
         let symp = SymptomSeverity {
             patient_id: patient_id.clone(),
@@ -634,16 +719,31 @@ impl MentalHealthContract {
         };
 
         env.storage().persistent().set(
-            &DataKey::Symptom(patient_id.clone(), symptom_type, measurement_date),
+            &DataKey::Symptom(count),
             &symp,
         );
+
+        // Append symptom ID to per-day list
+        let mut day_list: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SymptomDay(patient_id.clone(), symptom_type.clone(), measurement_date))
+            .unwrap_or(Vec::new(&env));
+        day_list.push_back(count);
+        env.storage()
+            .persistent()
+            .set(&DataKey::SymptomDay(patient_id.clone(), symptom_type.clone(), measurement_date), &day_list);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::SymptomCounter, &count);
 
         env.events().publish(
             (Symbol::new(&env, "symptom_tracked"), measurement_date),
             patient_id,
         );
 
-        Ok(())
+        Ok(count)
     }
 
     pub fn document_hospitalization(
@@ -655,6 +755,8 @@ impl MentalHealthContract {
         facility_id: Address,
         discharge_date: Option<u64>,
     ) -> Result<u64, Error> {
+        facility_id.require_auth();
+
         // Validate explicit consent for hospitalization records
         Self::validate_explicit_consent(
             &env,
@@ -738,12 +840,14 @@ impl MentalHealthContract {
         measurement_date: u64,
         outcome_measures: Vec<OutcomeMeasure>,
         _functional_improvement: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let plan: TreatmentPlan = env
             .storage()
             .persistent()
             .get(&DataKey::TreatmentPlan(treatment_plan_id))
             .ok_or(Error::NotFound)?;
+
+        plan.provider_id.require_auth();
 
         Self::validate_explicit_consent(
             &env,
@@ -752,17 +856,40 @@ impl MentalHealthContract {
             &plan.provider_id,
         )?;
 
+        // Use a counter for unique outcome record IDs instead of date-only key (#681)
+        let mut count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::OutcomeCounter)
+            .unwrap_or(0);
+        count += 1;
+
         env.storage().persistent().set(
-            &DataKey::Outcomes(treatment_plan_id, measurement_date),
+            &DataKey::Outcomes(treatment_plan_id, count),
             &outcome_measures,
         );
+
+        // Append to per-day list
+        let mut day_list: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::OutcomeDay(treatment_plan_id, measurement_date))
+            .unwrap_or(Vec::new(&env));
+        day_list.push_back(count);
+        env.storage()
+            .persistent()
+            .set(&DataKey::OutcomeDay(treatment_plan_id, measurement_date), &day_list);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::OutcomeCounter, &count);
 
         env.events().publish(
             (Symbol::new(&env, "outcomes_tracked"), treatment_plan_id),
             plan.patient_id,
         );
 
-        Ok(())
+        Ok(count)
     }
 
     pub fn set_enhanced_privacy_flag(
@@ -777,6 +904,62 @@ impl MentalHealthContract {
             &requires_explicit_consent,
         );
         Ok(())
+    }
+
+    /// Authorize an address (e.g. the emergency-medical-info contract) to resolve
+    /// de-identified pseudonyms back to real patient addresses.
+    pub fn authorize_resolver(env: Env, admin: Address, resolver: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let emergency_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::EmergencyContractAddress)
+            .ok_or(Error::NotAuthorized)?;
+        // Only the contract deployer/emergency-contract admin can authorize resolvers;
+        // for simplicity, require that the caller matches the emergency contract address.
+        if admin != emergency_addr {
+            return Err(Error::NotAuthorized);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::AuthorizedResolver(resolver.clone()), &true);
+        Ok(())
+    }
+
+    /// Revoke a resolver's authorization.
+    pub fn revoke_resolver(env: Env, admin: Address, resolver: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let emergency_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::EmergencyContractAddress)
+            .ok_or(Error::NotAuthorized)?;
+        if admin != emergency_addr {
+            return Err(Error::NotAuthorized);
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AuthorizedResolver(resolver));
+        Ok(())
+    }
+
+    /// Resolve a de-identified pseudonym address back to the real patient address.
+    /// Only authorized resolvers may call this.
+    pub fn resolve_pseudonym(env: Env, caller: Address, pseudonym: Address) -> Result<Address, Error> {
+        caller.require_auth();
+        // Verify caller is authorized
+        let is_authorized: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AuthorizedResolver(caller.clone()))
+            .unwrap_or(false);
+        if !is_authorized {
+            return Err(Error::NotAuthorized);
+        }
+        env.storage()
+            .persistent()
+            .get(&DataKey::PseudonymMapping(pseudonym))
+            .ok_or(Error::NotFound)
     }
 }
 

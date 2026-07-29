@@ -81,6 +81,10 @@ pub enum DataKey {
     SignerProposal,
     /// Current on-chain schema version — compared against `UpgradeProposal::min_compatible_schema`.
     SchemaVersion,
+    /// Signers who have voted to cancel an `Approved` proposal (#630). Distinct
+    /// from the original approval `votes` — a fresh threshold of signers is
+    /// required to override an already-approved proposal.
+    CancelVotes(u64),
 }
 
 #[contracttype]
@@ -125,6 +129,9 @@ pub struct UpgradeProposal {
     pub new_wasm_hash: BytesN<32>,
     pub release_metadata: ReleaseMetadata,
     pub artifact_metadata_hash: BytesN<32>,
+    /// Signer who created this proposal; retains unilateral cancel authority
+    /// even after the proposal reaches `Approved`.
+    pub proposer: Address,
     pub votes: Vec<Address>,
     pub proposed_at: u64,
     /// Timestamp when the threshold was first reached (starts the timelock).
@@ -238,6 +245,7 @@ impl UpgradeGovernance {
             new_wasm_hash: new_wasm_hash.clone(),
             release_metadata,
             artifact_metadata_hash,
+            proposer: proposer.clone(),
             votes,
             proposed_at: env.ledger().timestamp(),
             approved_at: 0,
@@ -321,6 +329,7 @@ impl UpgradeGovernance {
             new_wasm_hash: new_wasm_hash.clone(),
             release_metadata,
             artifact_metadata_hash,
+            proposer: proposer.clone(),
             votes,
             proposed_at: env.ledger().timestamp(),
             approved_at,
@@ -478,6 +487,8 @@ impl UpgradeGovernance {
     }
 
     /// Cancel an approved-but-not-yet-executed proposal during the timelock window.
+    /// For Active proposals, any signer may cancel. For Approved proposals, only the
+    /// original proposer may cancel, or a fresh threshold of signers must approve.
     pub fn cancel_upgrade(env: Env, caller: Address, proposal_id: u64) -> Result<(), Error> {
         Self::assert_initialized(&env)?;
         caller.require_auth();
@@ -492,8 +503,44 @@ impl UpgradeGovernance {
         match proposal.status {
             ProposalStatus::Executed => return Err(Error::AlreadyExecuted),
             ProposalStatus::Cancelled => return Err(Error::Cancelled),
-            // Allow cancellation of both Active and Approved proposals.
-            _ => {}
+            ProposalStatus::Approved => {
+                // For Approved proposals, only the original proposer may cancel.
+                let is_proposer = proposal.votes.first().map_or(false, |v| v == &caller);
+                if !is_proposer {
+                    return Err(Error::NotAuthorized);
+                }
+            }
+            ProposalStatus::Active => {}
+        }
+
+        if proposal.status == ProposalStatus::Approved && caller != proposal.proposer {
+            let mut cancel_votes: Vec<Address> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::CancelVotes(proposal_id))
+                .unwrap_or(Vec::new(&env));
+
+            if !cancel_votes.iter().any(|signer| signer == caller) {
+                cancel_votes.push_back(caller.clone());
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::CancelVotes(proposal_id), &cancel_votes);
+            }
+
+            let threshold: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Threshold)
+                .ok_or(Error::NotInitialized)?;
+
+            if (cancel_votes.len() as u32) < threshold {
+                // Vote recorded; not yet enough fresh signers to cancel.
+                return Ok(());
+            }
+
+            env.storage()
+                .persistent()
+                .remove(&DataKey::CancelVotes(proposal_id));
         }
 
         proposal.status = ProposalStatus::Cancelled;

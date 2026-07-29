@@ -344,7 +344,7 @@ impl ClinicalTrialContract {
         validation::validate_date_not_future(&env, enrollment_date)?;
 
         // Verify informed consent hash matches current consent version
-        if !Self::is_valid_consent(&env, &informed_consent_hash) {
+        if !Self::is_valid_consent(&env, trial_record_id, &informed_consent_hash) {
             return Err(Error::InvalidConsent);
         }
 
@@ -404,14 +404,37 @@ impl ClinicalTrialContract {
         Ok(enrollment_id)
     }
 
-    /// Check if the informed consent hash matches the current consent version
-    fn is_valid_consent(env: &Env, informed_consent_hash: &BytesN<32>) -> bool {
-        // In a real implementation, this would invoke the patient registry contract
-        // For now, return true as placeholder
-        // let patient_registry: Address = env.storage().instance().get(&DataKey::PatientRegistry).unwrap();
-        // let current_version: BytesN<32> = env.invoke_contract(&patient_registry, &symbol_short!("get_consent_version"), ()).unwrap();
-        // informed_consent_hash == &current_version
-        true
+    /// Set the current informed-consent document hash for a trial. Only the
+    /// trial's principal investigator may update it.
+    pub fn set_consent_version(
+        env: Env,
+        principal_investigator: Address,
+        trial_record_id: u64,
+        consent_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        principal_investigator.require_auth();
+
+        let trial = storage::get_trial(&env, trial_record_id)?;
+        if trial.principal_investigator != principal_investigator {
+            return Err(Error::Unauthorized);
+        }
+
+        storage::set_consent_version(&env, trial_record_id, &consent_hash);
+        Ok(())
+    }
+
+    /// Check if the informed consent hash matches the trial's current consent version.
+    /// Fails closed: if no consent version has been configured for the trial, no hash
+    /// can be considered valid.
+    fn is_valid_consent(
+        env: &Env,
+        trial_record_id: u64,
+        informed_consent_hash: &BytesN<32>,
+    ) -> bool {
+        match storage::get_consent_version(env, trial_record_id) {
+            Some(current_version) => &current_version == informed_consent_hash,
+            None => false,
+        }
     }
 
     /// Record a study visit
@@ -918,7 +941,7 @@ impl ClinicalTrialContract {
         validation::validate_date_not_future(&env, enrollment_date)?;
 
         // Validate consent
-        if !Self::is_valid_consent(&env, &informed_consent_hash) {
+        if !Self::is_valid_consent(&env, trial_record_id, &informed_consent_hash) {
             return Err(Error::InvalidConsent);
         }
 
@@ -1017,7 +1040,7 @@ impl ClinicalTrialContract {
 
         validation::validate_date_not_future(&env, enrollment_date)?;
 
-        if !Self::is_valid_consent(&env, &new_consent_hash) {
+        if !Self::is_valid_consent(&env, trial_record_id, &new_consent_hash) {
             return Err(Error::InvalidConsent);
         }
 

@@ -177,7 +177,7 @@ fn test_unregistered_insurer_cannot_adjudicate() {
         &Vec::new(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
-        &5000,
+        &15000,
     );
 
     let result =
@@ -203,7 +203,7 @@ fn test_wrong_insurer_cannot_adjudicate() {
         &Vec::new(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
-        &5000,
+        &15000,
     );
 
     let result = client.try_adjudicate_claim(
@@ -234,7 +234,7 @@ fn test_unregistered_insurer_cannot_process_payment() {
         &Vec::new(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
-        &5000,
+        &15000,
     );
 
     client.adjudicate_claim(
@@ -268,7 +268,7 @@ fn test_submit_claim_with_unregistered_insurer_fails() {
         &Vec::new(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
-        &5000,
+        &15000,
     );
     assert_eq!(result, Err(Ok(Error::InsurerNotRegistered)));
 }
@@ -289,7 +289,7 @@ fn test_appeal_workflow() {
         &Vec::new(&env),
         &BytesN::from_array(&env, &[1; 32]),
         &policy(&env),
-        &25000,
+        &15000,
     );
 
     let mut denials = Vec::new(&env);
@@ -760,4 +760,44 @@ fn test_integration_expired_insurer_returns_insurer_not_active() {
         &15000,
     );
     assert_eq!(result, Err(Ok(Error::InsurerNotActive)));
+}
+
+#[test]
+fn test_dispute_lifecycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, provider, patient, insurer) = setup(&env);
+
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &100,
+        &make_services(&env),
+        &Vec::new(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &5000,
+    );
+
+    let reviewer = Address::generate(&env);
+    client.register_reviewer(&admin, &reviewer);
+
+    let reason_hash = reference_hash(&env, 9);
+    let dispute_id = client.open_dispute(&claim_id, &patient, &reason_hash);
+    assert_eq!(dispute_id, 1);
+
+    let resolution_hash = reference_hash(&env, 10);
+    client.resolve_dispute(&dispute_id, &reviewer, &resolution_hash);
+
+    // A resolved dispute cannot be resolved again.
+    let result = client.try_resolve_dispute(&dispute_id, &reviewer, &resolution_hash);
+    assert_eq!(result, Err(Ok(Error::DisputeAlreadyResolved)));
+
+    // An unregistered reviewer cannot resolve disputes.
+    let rogue = Address::generate(&env);
+    let other_dispute_id = client.open_dispute(&claim_id, &provider, &reason_hash);
+    let result = client.try_resolve_dispute(&other_dispute_id, &rogue, &resolution_hash);
+    assert_eq!(result, Err(Ok(Error::NotAuthorizedReviewer)));
 }

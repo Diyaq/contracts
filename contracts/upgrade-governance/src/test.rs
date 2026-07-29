@@ -274,17 +274,61 @@ fn test_cancel_active_proposal() {
 }
 
 #[test]
-fn test_cancel_approved_proposal_during_timelock() {
+fn test_proposer_can_cancel_approved_proposal_during_timelock() {
     let (env, signers, client) = setup(3, 2);
     let s0 = signers.get(0).unwrap();
     let s1 = signers.get(1).unwrap();
-    let s2 = signers.get(2).unwrap();
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
     let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     client.vote_upgrade(&s1, &id);
-    // Proposal is now Approved; cancel during timelock window.
-    client.cancel_upgrade(&s2, &id);
+    // Proposal is now Approved; the original proposer retains unilateral
+    // cancel authority during the timelock window.
+    client.cancel_upgrade(&s0, &id);
+    let proposal = client.get_proposal(&id);
+    assert_eq!(proposal.status, ProposalStatus::Cancelled);
+}
+
+#[test]
+fn test_lone_signer_cannot_cancel_approved_proposal() {
+    // #630: once signers A+C have pushed a proposal to Approved, signer B
+    // acting alone must not be able to unilaterally veto it.
+    let (env, signers, client) = setup(3, 2);
+    let a = signers.get(0).unwrap();
+    let b = signers.get(1).unwrap();
+    let c = signers.get(2).unwrap();
+    let metadata = release_metadata(&env);
+    let metadata_hash = metadata_hash(&env, &metadata);
+    let id = client.propose_upgrade(&a, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
+    client.vote_upgrade(&c, &id);
+    let proposal = client.get_proposal(&id);
+    assert_eq!(proposal.status, ProposalStatus::Approved);
+
+    // B is not the proposer and B's lone vote is below the fresh cancel
+    // threshold, so the proposal must remain Approved.
+    client.cancel_upgrade(&b, &id);
+    let proposal = client.get_proposal(&id);
+    assert_eq!(proposal.status, ProposalStatus::Approved);
+}
+
+#[test]
+fn test_fresh_signer_threshold_cancels_approved_proposal() {
+    let (env, signers, client) = setup(3, 2);
+    let a = signers.get(0).unwrap();
+    let b = signers.get(1).unwrap();
+    let c = signers.get(2).unwrap();
+    let metadata = release_metadata(&env);
+    let metadata_hash = metadata_hash(&env, &metadata);
+    let id = client.propose_upgrade(&a, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
+    client.vote_upgrade(&c, &id);
+
+    // Neither B nor C is the proposer; once both vote to cancel, the fresh
+    // threshold (2) is met and the proposal is cancelled without A's input.
+    client.cancel_upgrade(&b, &id);
+    let proposal = client.get_proposal(&id);
+    assert_eq!(proposal.status, ProposalStatus::Approved);
+
+    client.cancel_upgrade(&c, &id);
     let proposal = client.get_proposal(&id);
     assert_eq!(proposal.status, ProposalStatus::Cancelled);
 }
@@ -316,6 +360,21 @@ fn test_execute_cancelled_proposal_returns_error() {
     env.ledger().with_mut(|li| { li.timestamp += TIMELOCK_DELAY + 1; });
     let err = client.try_execute_upgrade(&s0, &id).unwrap_err().unwrap();
     assert_eq!(err, Error::Cancelled);
+}
+
+#[test]
+fn test_cancel_approved_proposal_by_non_proposer_returns_error() {
+    let (env, signers, client) = setup(3, 2);
+    let s0 = signers.get(0).unwrap();
+    let s1 = signers.get(1).unwrap();
+    let s2 = signers.get(2).unwrap();
+    let metadata = release_metadata(&env);
+    let metadata_hash = metadata_hash(&env, &metadata);
+    let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
+    client.vote_upgrade(&s1, &id);
+    // Proposal is now Approved; s2 (not the proposer) cannot cancel
+    let err = client.try_cancel_upgrade(&s2, &id).unwrap_err().unwrap();
+    assert_eq!(err, Error::NotAuthorized);
 }
 
 // ── execute: under threshold ──────────────────────────────────────────────────

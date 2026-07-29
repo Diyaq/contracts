@@ -111,6 +111,10 @@ pub enum DataKey {
     EmergencyNotifications(Address),
     RecoveryConfig(Address),
     RecoveryProposal(Address),
+    Admin,
+    /// Registered emergency responder -> active flag. Only a registered,
+    /// active responder may invoke the break-glass `emergency_access_request`.
+    Responder(Address),
 }
 
 /// Maximum number of hashes allowed in `critical_allergy_hashes`.
@@ -125,6 +129,8 @@ pub enum Error {
     NotAuthorized = 2,
     InvalidRecoveryThreshold = 3,
     TooManyCriticalAllergies = 4,
+    NotInitialized = 5,
+    AlreadyInitialized = 6,
 }
 
 #[contract]
@@ -132,6 +138,52 @@ pub struct EmergencyMedicalInfo;
 
 #[contractimpl]
 impl EmergencyMedicalInfo {
+    /// Configure the admin address allowed to manage the emergency responder registry.
+    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        Ok(())
+    }
+
+    /// Register an address as an authorized emergency responder.
+    /// Only the configured admin may grant responder status.
+    pub fn register_responder(env: Env, admin: Address, responder: Address) -> Result<(), Error> {
+        Self::assert_admin(&env, &admin)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Responder(responder), &true);
+        Ok(())
+    }
+
+    /// Revoke a previously registered emergency responder.
+    /// Only the configured admin may revoke responder status.
+    pub fn revoke_responder(env: Env, admin: Address, responder: Address) -> Result<(), Error> {
+        Self::assert_admin(&env, &admin)?;
+        env.storage().persistent().remove(&DataKey::Responder(responder));
+        Ok(())
+    }
+
+    /// Check whether `responder` is currently a registered emergency responder.
+    pub fn is_registered_responder(env: Env, responder: Address) -> bool {
+        env.storage().persistent().has(&DataKey::Responder(responder))
+    }
+
+    fn assert_admin(env: &Env, admin: &Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if *admin != stored_admin {
+            return Err(Error::NotAuthorized);
+        }
+        Ok(())
+    }
+
     /// Set or update emergency profile for a patient
     /// Sub-second access optimized with persistent storage
     #[allow(clippy::too_many_arguments)]
@@ -219,6 +271,12 @@ impl EmergencyMedicalInfo {
         location_hash: BytesN<32>,
     ) -> Result<EmergencyProfile, Error> {
         provider_id.require_auth();
+
+        // Break-glass access is limited to addresses registered as emergency
+        // responders -- proving control of an address is not proof of role.
+        if !Self::is_registered_responder(env.clone(), provider_id.clone()) {
+            return Err(Error::NotAuthorized);
+        }
 
         // Log the emergency access (break-glass audit)
         let access_log = EmergencyAccessLog {

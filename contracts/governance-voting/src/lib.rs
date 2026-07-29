@@ -79,6 +79,8 @@ pub enum DataKey {
     Vote(u64, Address),  // (proposal_id, voter) → VoteChoice
     PendingAdmin,
     RotationExpiry,
+    ProposalCount,
+    Members,
 }
 
 #[contract]
@@ -92,27 +94,114 @@ impl GovernanceVotingContract {
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::NextId, &1u64);
+        env.storage().instance().set(&DataKey::ProposalCount, &0u32);
+        let empty_members: Vec<Address> = Vec::new(&env);
+        env.storage().instance().set(&DataKey::Members, &empty_members);
         Ok(())
     }
 
-    /// Create a new governance proposal.
+    /// Register a member eligible to vote.
+    pub fn register_member(env: Env, admin: Address, member: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if admin != stored {
+            return Err(Error::Unauthorized);
+        }
+
+        let mut members: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Members)
+            .unwrap_or(Vec::new(&env));
+
+        let mut i = 0u32;
+        while i < members.len() {
+            if let Some(m) = members.get(i) {
+                if m == member {
+                    return Ok(());
+                }
+            }
+            i += 1;
+        }
+
+        members.push_back(member);
+        env.storage().instance().set(&DataKey::Members, &members);
+        Ok(())
+    }
+
+    /// Unregister a member.
+    pub fn unregister_member(env: Env, admin: Address, member: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if admin != stored {
+            return Err(Error::Unauthorized);
+        }
+
+        let mut members: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Members)
+            .unwrap_or(Vec::new(&env));
+
+        let mut found_idx = None;
+        let mut i = 0u32;
+        while i < members.len() {
+            if let Some(m) = members.get(i) {
+                if m == member {
+                    found_idx = Some(i);
+                    break;
+                }
+            }
+            i += 1;
+        }
+
+        if let Some(idx) = found_idx {
+            members.remove(idx);
+            env.storage().instance().set(&DataKey::Members, &members);
+        }
+
+        Ok(())
+    }
+
+    /// Create a new governance proposal. Only admin can create proposals.
     pub fn create_proposal(
         env:         Env,
-        proposer:    Address,
+        admin:       Address,
         title:       String,
         description: String,
         quorum:      u32,
         duration:    u64,  // seconds from now
     ) -> Result<u64, Error> {
-        proposer.require_auth();
+        admin.require_auth();
+        let stored: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if admin != stored {
+            return Err(Error::Unauthorized);
+        }
         if quorum == 0 { return Err(Error::InvalidQuorum); }
+
+        let count: u32 = env.storage().instance().get(&DataKey::ProposalCount).unwrap_or(0);
+        if count >= MAX_PROPOSALS {
+            return Err(Error::Unauthorized);
+        }
 
         let id: u64 = env.storage().instance().get(&DataKey::NextId).unwrap_or(1);
         let deadline = env.ledger().timestamp() + duration;
 
         let proposal = Proposal {
             id,
-            proposer: proposer.clone(),
+            proposer: admin.clone(),
             title,
             description,
             yes_votes: 0,
@@ -123,12 +212,13 @@ impl GovernanceVotingContract {
         };
         env.storage().persistent().set(&DataKey::Proposal(id), &proposal);
         env.storage().instance().set(&DataKey::NextId, &(id + 1));
+        env.storage().instance().set(&DataKey::ProposalCount, &(count + 1));
 
-        env.events().publish((symbol_short!("PROPOSE"), proposer), id);
+        env.events().publish((symbol_short!("PROPOSE"), admin), id);
         Ok(id)
     }
 
-    /// Cast a yes or no vote on an active proposal.
+    /// Cast a yes or no vote on an active proposal. Voter must be a registered member.
     pub fn vote(
         env:         Env,
         voter:       Address,
@@ -136,6 +226,28 @@ impl GovernanceVotingContract {
         choice:      VoteChoice,
     ) -> Result<(), Error> {
         voter.require_auth();
+
+        let members: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Members)
+            .unwrap_or(Vec::new(&env));
+
+        let mut is_member = false;
+        let mut i = 0u32;
+        while i < members.len() {
+            if let Some(m) = members.get(i) {
+                if m == voter {
+                    is_member = true;
+                    break;
+                }
+            }
+            i += 1;
+        }
+
+        if !is_member {
+            return Err(Error::Unauthorized);
+        }
 
         let vote_key = DataKey::Vote(proposal_id, voter.clone());
         if env.storage().persistent().has(&vote_key) {

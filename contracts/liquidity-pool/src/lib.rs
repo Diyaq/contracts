@@ -24,7 +24,7 @@
 //! mathematically. Reserve balances cryptographically signed via Soroban state.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Symbol,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
 };
 
 const POOL_FEE_BPS: i128 = 30; // 0.30%
@@ -58,6 +58,8 @@ pub enum DataKey {
     Shares(Address),
     PendingAdmin,
     RotationExpiry,
+    TokenA,
+    TokenB,
 }
 
 #[contracttype]
@@ -73,11 +75,18 @@ pub struct LiquidityPoolContract;
 
 #[contractimpl]
 impl LiquidityPoolContract {
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        token_a: Address,
+        token_b: Address,
+    ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::TokenA, &token_a);
+        env.storage().instance().set(&DataKey::TokenB, &token_b);
         env.storage().instance().set(&DataKey::ReserveA, &0i128);
         env.storage().instance().set(&DataKey::ReserveB, &0i128);
         env.storage().instance().set(&DataKey::TotalShares, &0i128);
@@ -125,6 +134,20 @@ impl LiquidityPoolContract {
         if shares <= 0 {
             return Err(Error::InsufficientLiquidity);
         }
+
+        let token_a: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenA)
+            .ok_or(Error::NotInitialized)?;
+        let token_b: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenB)
+            .ok_or(Error::NotInitialized)?;
+        let pool = env.current_contract_address();
+        token::Client::new(&env, &token_a).transfer(&provider, &pool, &amount_a);
+        token::Client::new(&env, &token_b).transfer(&provider, &pool, &amount_b);
 
         env.storage()
             .instance()
@@ -186,8 +209,12 @@ impl LiquidityPoolContract {
             .get(&DataKey::TotalShares)
             .unwrap_or(0);
 
-        let out_a = shares * reserve_a / total;
-        let out_b = shares * reserve_b / total;
+        let out_a = shares
+            .checked_mul(reserve_a)
+            .ok_or(Error::ArithmeticOverflow)? / total;
+        let out_b = shares
+            .checked_mul(reserve_b)
+            .ok_or(Error::ArithmeticOverflow)? / total;
 
         env.storage()
             .instance()
@@ -201,6 +228,20 @@ impl LiquidityPoolContract {
         env.storage()
             .persistent()
             .set(&DataKey::Shares(provider.clone()), &(held - shares));
+
+        let token_a: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenA)
+            .ok_or(Error::NotInitialized)?;
+        let token_b: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenB)
+            .ok_or(Error::NotInitialized)?;
+        let pool = env.current_contract_address();
+        token::Client::new(&env, &token_a).transfer(&pool, &provider, &out_a);
+        token::Client::new(&env, &token_b).transfer(&pool, &provider, &out_b);
 
         env.events()
             .publish((symbol_short!("REM_LIQ"), provider), (out_a, out_b, shares));
@@ -241,6 +282,20 @@ impl LiquidityPoolContract {
         if amount_out < min_out {
             return Err(Error::SlippageExceeded);
         }
+
+        let token_a: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenA)
+            .ok_or(Error::NotInitialized)?;
+        let token_b: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenB)
+            .ok_or(Error::NotInitialized)?;
+        let pool = env.current_contract_address();
+        token::Client::new(&env, &token_a).transfer(&trader, &pool, &amount_in);
+        token::Client::new(&env, &token_b).transfer(&pool, &trader, &amount_out);
 
         env.storage()
             .instance()

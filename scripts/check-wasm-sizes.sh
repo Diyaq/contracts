@@ -3,8 +3,8 @@
 
 set -e
 
-# Target size limit (200 KB)
-TARGET_SIZE=$((200 * 1024))
+# Target size limit (128 KB)
+TARGET_SIZE=$((128 * 1024))
 
 # Colors
 RED='\033[0;31m'
@@ -12,7 +12,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-echo "Checking WASM binary sizes against limit (200 KB)..."
+echo "Checking WASM binary sizes against limit (128 KB)..."
 echo ""
 
 WASM_DIR="target/wasm32-unknown-unknown/release/optimized"

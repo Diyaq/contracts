@@ -278,4 +278,6 @@ pub enum DataKey {
     TrialPhaseProtocol(u64),
     /// Ordered list of ProtocolAmendment records for a trial (#485).
     AmendmentLog(u64),
+    /// Current informed-consent document hash for a trial, set by the PI.
+    ConsentVersion(u64),
 }

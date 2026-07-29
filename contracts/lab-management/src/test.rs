@@ -322,3 +322,47 @@ fn test_provider_registration_verification() {
     let order_id = result.unwrap();
     assert_eq!(order_id, 0);
 }
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_submit_results_by_unassigned_lab_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(LabManagementContract, ());
+    let client = LabManagementContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let lab_a = Address::generate(&env);
+    let lab_b = Address::generate(&env);
+
+    let order_id = client.order_lab_test(&provider, &patient, &make_req(&env));
+    client.assign_lab(&order_id, &lab_a, &3600);
+
+    // lab_b attempts to submit results for an order assigned to lab_a
+    client.submit_results(
+        &order_id,
+        &lab_b,
+        &BytesN::from_array(&env, &[2u8; 32]),
+        &vec![&env, make_result(&env)],
+        &true,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_assign_lab_without_auth_returns_error() {
+    let env = Env::default();
+    // Don't mock all auths - we want to test auth failure
+    let contract_id = env.register(LabManagementContract, ());
+    let client = LabManagementContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let lab = Address::generate(&env);
+
+    let order_id = client.order_lab_test(&provider, &patient, &make_req(&env));
+    
+    // This should fail because provider_id.require_auth() is not satisfied
+    client.assign_lab(&order_id, &lab, &3600);
+}
