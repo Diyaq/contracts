@@ -34,7 +34,14 @@ Complete every item before running the first mainnet deployment.
 - [ ] `upgrade-governance` contract deployed second
 - [ ] Governance thresholds and signer set verified on-chain
 
-### Deployment
+- [ ] All 80 open issues resolved or explicitly deferred (with rationale documented)
+- [ ] `cargo test --workspace` passes with zero compilation errors
+- [ ] `cargo clippy --workspace` runs with no warnings
+- [ ] WASM sizes verified within Stellar's contract size limit (current limit: 128 KB) and no contract is within the defined safety margin (10% / ≥ 115.2 KB)
+- [ ] `upgrade-governance` contract controls all production admin keys
+- [ ] All contract interfaces reviewed and stabilized (API changes should be minimal post-launch)
+- [ ] Deployment manifest published and verified (see SECURITY.md)
+- [ ] Dry-run deployment executed against a Mainnet preview/staging environment
 
 - [ ] Dry-run completed: `./scripts/deploy_all.sh --network mainnet --dry-run`
 - [ ] All contract WASMs build cleanly for `wasm32v1-none`
@@ -61,8 +68,65 @@ it is safe to enable it as soon as the manifest is populated.
 
 ## How to update this document after deployment
 
-1. Complete all checklist items above and tick each box.
-2. Update the status banner at the top from `NOT YET DEPLOYED` to
-   `DEPLOYED – <date>`.
-3. Commit the updated `deployments/mainnet.json` (with real contract IDs)
-   and this file together in the same PR.
+1. Configure `STELLAR_IDENTITY` to point to the production admin multi-sig account or HSM
+2. Execute deployment with monitoring enabled:
+   ```bash
+   ./scripts/deploy_all.sh --network mainnet
+   ```
+3. Verify contract IDs in `deployments/mainnet.json` match the on-chain state
+4. Record all deployed contract IDs in a secure, versioned log
+
+### Post-Deployment Validation
+
+- [ ] All contracts successfully initialized on Mainnet
+- [ ] Governance contracts (`multisig-governance`, `upgrade-governance`) operational
+- [ ] Each deployed contract responds to a no-op or read-only query
+- [ ] Deployment manifest hashes verified against on-chain bytecode using Stellar Expert or Horizon API
+- [ ] No unexpected errors or warnings in logs
+
+## Sign-Off
+
+Production readiness requires explicit sign-off from:
+
+1. **Lead Developer** — confirms code quality, testing, and deployment plan
+   - Name: ________________
+   - Date: ________________
+   - Signature: ________________
+
+2. **Security Lead** — confirms audit findings resolved and security architecture sound
+   - Name: ________________
+   - Date: ________________
+   - Signature: ________________
+
+3. **Legal Counsel** — confirms compliance and data privacy requirements met
+   - Name: ________________
+   - Date: ________________
+   - Signature: ________________
+
+## Post-Launch Monitoring
+
+After Mainnet launch:
+
+- [ ] Monitor alerting dashboards for 72 hours continuously
+- [ ] Weekly review of anomaly detection alerts for first month
+- [ ] Monthly operational review with on-call team
+- [ ] Quarterly security audit of governance decisions and contract state
+- [ ] Incident postmortems completed within 24 hours of any production issue
+
+## Rollback Plan
+
+In case of critical issues post-launch:
+
+1. **Minor issues**: Use `upgrade-governance` to deploy a patched version
+2. **Critical issues**: Execute emergency governance proposal to pause high-risk functions
+3. **Severe compromise**: Invoke emergency pause via multi-sig (if implemented)
+
+Document any rollback decisions in the incident log and notify stakeholders.
+
+## References
+
+- [DEPLOYMENT.md](./DEPLOYMENT.md) — Deployment guide and procedures
+- [SECURITY.md](./SECURITY.md) — Security architecture and policies
+- [TTL_POLICY.md](./TTL_POLICY.md) — TTL management strategy
+- Stellar Documentation: https://developers.stellar.org/ (current limit: 128 KB on Mainnet)
+- [WASM_SIZE_BASELINE.md](./WASM_SIZE_BASELINE.md) — Measured contract sizes and optimization targets
