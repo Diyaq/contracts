@@ -101,13 +101,12 @@ impl LabManagementContract {
     }
 
     fn is_provider_registered(env: &Env, provider: &Address) -> bool {
-        if let Ok(provider_registry) = env
+        if let Some(provider_registry) = env
             .storage()
             .instance()
             .get::<_, Address>(&DataKey::ProviderRegistry)
         {
-            let args = vec![env, provider.clone().into_val(env)];
-            env.invoke_contract(&provider_registry, &Symbol::new(env, "is_provider"), args)
+            shared::actor_verification::is_provider_registered(env, &provider_registry, provider)
         } else {
             false
         }

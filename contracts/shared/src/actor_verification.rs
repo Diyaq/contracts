@@ -121,3 +121,36 @@ fn verify_insurer(env: &Env, address: &Address) -> bool {
     let args = vec![env, address.clone().into_val(env)];
     env.invoke_contract(&registry, &Symbol::new(env, "is_insurer_active"), args)
 }
+
+/// Helper to check if a provider is registered with a provider registry.
+pub fn is_provider_registered(env: &Env, provider_registry: &Address, provider: &Address) -> bool {
+    let args = vec![env, provider.clone().into_val(env)];
+    env.invoke_contract(provider_registry, &Symbol::new(env, "is_provider"), args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{contract, contractimpl, Address, Env};
+    use soroban_sdk::testutils::Address as _;
+
+    #[contract]
+    pub struct MockProviderRegistry;
+
+    #[contractimpl]
+    impl MockProviderRegistry {
+        pub fn is_provider(_env: Env, _provider: Address) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn test_is_provider_registered() {
+        let env = Env::default();
+        let registry_id = env.register(MockProviderRegistry, ());
+        let provider = Address::generate(&env);
+
+        let is_reg = is_provider_registered(&env, &registry_id, &provider);
+        assert!(is_reg);
+    }
+}

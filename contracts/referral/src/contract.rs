@@ -1,7 +1,7 @@
 use crate::types::{DataKey, Error, Referral, ReferralStatus};
 use shared::privacy::validate_nonzero_address;
 use shared_contracts::safe_increment;
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Symbol, Vec, vec};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Vec, vec};
 
 #[contract]
 pub struct ReferralContract;
@@ -17,13 +17,12 @@ impl ReferralContract {
     }
 
     fn is_provider_registered(env: &Env, provider: &Address) -> bool {
-        if let Ok(provider_registry) = env
+        if let Some(provider_registry) = env
             .storage()
             .instance()
             .get::<_, Address>(&DataKey::ProviderRegistry)
         {
-            let args = vec![env, provider.clone().into_val(env)];
-            env.invoke_contract(&provider_registry, &Symbol::new(env, "is_provider"), args)
+            shared::actor_verification::is_provider_registered(env, &provider_registry, provider)
         } else {
             false
         }
