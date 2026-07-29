@@ -108,13 +108,13 @@ cargo install --locked stellar-cli
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/KingFRANKHOOD/contracts.git
+git clone https://github.com/Healthy-Stellar/contracts.git
 cd contracts
 ```
 
 Or via SSH:
 ```bash
-git clone git@github.com:KingFRANKHOOD/contracts.git
+git clone git@github.com:Healthy-Stellar/contracts.git
 cd contracts
 ```
 
