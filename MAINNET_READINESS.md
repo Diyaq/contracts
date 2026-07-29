@@ -20,7 +20,11 @@ Complete every item before running the first mainnet deployment.
 - [ ] All contracts audited or peer-reviewed for logic errors
 - [ ] Security audit (`cargo audit`) shows no unaddressed vulnerabilities
 
-### Key management
+- [ ] HIPAA Security Rule gap analysis completed
+- [ ] Data Processing Agreement with Stellar Foundation reviewed and signed
+- [ ] GDPR data residency requirements assessed (acknowledge on-chain data is public and permanent)
+- [ ] Legal review of storing PHI references on a public blockchain completed ([ADR-007: Public ledger for healthcare data](docs/adr/ADR-007-public-ledger-for-healthcare-data.md))
+- [ ] Documentation on data minimization and encryption strategies in place
 
 - [ ] Deployer identity is a hardware wallet or multi-sig Stellar account
   — **never** a plain CI secret key for mainnet
