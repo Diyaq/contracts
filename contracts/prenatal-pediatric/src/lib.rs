@@ -267,6 +267,7 @@ impl MaternalChildHealthContract {
         visit_notes_hash: BytesN<32>,
     ) -> Result<(), Error> {
         let mut pregnancy = Self::get_pregnancy(&env, pregnancy_id)?;
+        pregnancy.provider_id.require_auth();
 
         if gestational_age_weeks > 45 || weight_kg_x100 <= 0 {
             return Err(Error::InvalidData);
@@ -305,7 +306,8 @@ impl MaternalChildHealthContract {
         results_hash: BytesN<32>,
         abnormal: bool,
     ) -> Result<(), Error> {
-        let _ = Self::get_pregnancy(&env, pregnancy_id)?;
+        let pregnancy = Self::get_pregnancy(&env, pregnancy_id)?;
+        pregnancy.provider_id.require_auth();
 
         let screening_id = Self::next_id(&env, symbol_short!("scrn_ctr"));
         let screening = PrenatalScreening {
@@ -334,7 +336,8 @@ impl MaternalChildHealthContract {
         placental_location: String,
         findings_hash: BytesN<32>,
     ) -> Result<(), Error> {
-        let _ = Self::get_pregnancy(&env, pregnancy_id)?;
+        let pregnancy = Self::get_pregnancy(&env, pregnancy_id)?;
+        pregnancy.provider_id.require_auth();
 
         if gestational_age > 45 {
             return Err(Error::InvalidData);
@@ -368,7 +371,8 @@ impl MaternalChildHealthContract {
         cervical_dilation: u32,
         cervical_effacement: u32,
     ) -> Result<u64, Error> {
-        let _ = Self::get_pregnancy(&env, pregnancy_id)?;
+        let pregnancy = Self::get_pregnancy(&env, pregnancy_id)?;
+        pregnancy.provider_id.require_auth();
 
         if cervical_dilation > 10 || cervical_effacement > 100 {
             return Err(Error::InvalidData);
@@ -439,6 +443,7 @@ impl MaternalChildHealthContract {
 
     pub fn record_newborn(
         env: Env,
+        provider_id: Address,
         delivery_id: u64,
         birth_datetime: u64,
         sex: Symbol,
@@ -454,6 +459,11 @@ impl MaternalChildHealthContract {
             .persistent()
             .get(&DataKey::Delivery(delivery_id))
             .ok_or(Error::NotFound)?;
+
+        if provider_id != delivery.delivering_provider {
+            return Err(Error::Unauthorized);
+        }
+        provider_id.require_auth();
 
         if apgar_1min > 10 || apgar_5min > 10 || gestational_age_weeks > 45 {
             return Err(Error::InvalidData);
@@ -489,12 +499,15 @@ impl MaternalChildHealthContract {
 
     pub fn record_newborn_screening(
         env: Env,
+        provider_id: Address,
         newborn_id: Address,
         screening_type: Symbol,
         test_date: u64,
         result: Symbol,
         requires_followup: bool,
     ) -> Result<(), Error> {
+        provider_id.require_auth();
+
         let _newborn: NewbornRecord = env
             .storage()
             .persistent()
@@ -520,6 +533,7 @@ impl MaternalChildHealthContract {
 
     pub fn track_pediatric_growth(
         env: Env,
+        provider_id: Address,
         patient_id: Address,
         measurement_date: u64,
         age_months: u32,
@@ -528,6 +542,8 @@ impl MaternalChildHealthContract {
         head_circumference_cm_x100: Option<i64>,
         bmi_x100: i64,
     ) -> Result<(), Error> {
+        provider_id.require_auth();
+
         if age_months > 228 || weight_kg_x100 <= 0 || height_cm_x100 <= 0 || bmi_x100 <= 0 {
             return Err(Error::InvalidData);
         }
@@ -560,6 +576,7 @@ impl MaternalChildHealthContract {
 
     pub fn record_developmental_milestone(
         env: Env,
+        provider_id: Address,
         patient_id: Address,
         assessment_date: u64,
         age_months: u32,
@@ -567,6 +584,8 @@ impl MaternalChildHealthContract {
         milestones_met: Vec<Symbol>,
         concerns: Vec<Symbol>,
     ) -> Result<(), Error> {
+        provider_id.require_auth();
+
         if age_months > 228 {
             return Err(Error::InvalidData);
         }
@@ -589,6 +608,7 @@ impl MaternalChildHealthContract {
 
     pub fn track_well_child_visit(
         env: Env,
+        provider_id: Address,
         patient_id: Address,
         visit_date: u64,
         age_months: u32,
@@ -596,6 +616,8 @@ impl MaternalChildHealthContract {
         developmental_screening: bool,
         anticipatory_guidance_hash: BytesN<32>,
     ) -> Result<(), Error> {
+        provider_id.require_auth();
+
         if age_months > 228 {
             return Err(Error::InvalidData);
         }

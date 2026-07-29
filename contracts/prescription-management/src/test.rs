@@ -132,6 +132,7 @@ fn max_cap_request(env: &Env, pharmacy: &Address, valid_until: u64) -> IssueRequ
         pharmacy_id: Some(pharmacy.clone()),
         bypass_allergy_check: false,
         dea_number: None,
+        bypass_reason_hash: None,
     }
 }
 

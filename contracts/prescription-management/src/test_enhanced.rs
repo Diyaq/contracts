@@ -790,8 +790,10 @@ fn test_rate_limit_exceeded_after_default_cap() {
     let provider = Address::generate(&env);
     let patient = Address::generate(&env);
 
-    // Set a tiny limit so we can exceed it quickly
-    client.configure_allergy_check(&admin, &admin, &false);
+    // Set admin directly without configuring allergy registry (avoids cross-contract call)
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(&DataKey::Admin, &admin);
+    });
     client.set_provider_limit(&admin, &provider, &2);
 
     let make_req = |n: u8| -> IssueRequest {
@@ -832,7 +834,9 @@ fn test_rate_limit_resets_after_window() {
     let provider = Address::generate(&env);
     let patient = Address::generate(&env);
 
-    client.configure_allergy_check(&admin, &admin, &false);
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(&DataKey::Admin, &admin);
+    });
     client.set_provider_limit(&admin, &provider, &1);
 
     let make_req = |ts: u64| -> IssueRequest {
@@ -880,7 +884,9 @@ fn test_admin_set_provider_limit_works() {
     let provider = Address::generate(&env);
     let patient = Address::generate(&env);
 
-    client.configure_allergy_check(&admin, &admin, &false);
+    env.as_contract(&contract_id, || {
+        env.storage().persistent().set(&DataKey::Admin, &admin);
+    });
     // Default limit is 100; set to 3
     client.set_provider_limit(&admin, &provider, &3);
 
@@ -1056,4 +1062,79 @@ fn test_non_owning_provider_cannot_use_template() {
 
     let result = client.try_issue_from_template(&other, &patient, &template_id, &valid_until);
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+/// Regression test for #583: ensures create_template does not contain orphaned
+/// prescription-issuance logic and that create_template and issue_prescription
+/// can be called independently without cross-contamination.
+#[test]
+fn test_create_template_and_issue_prescription_independently() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(PrescriptionContract, ());
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let pharmacy = Address::generate(&env);
+
+    // Create a template independently — should succeed and return a template ID.
+    let template = PrescriptionTemplate {
+        medication_name: String::from_str(&env, "Lisinopril"),
+        ndc_code: String::from_str(&env, "00000-7777"),
+        dosage: String::from_str(&env, "10mg"),
+        quantity: 30,
+        days_supply: 30,
+        refills_allowed: 3,
+        instructions_hash: BytesN::from_array(&env, &[3u8; 32]),
+        is_controlled: false,
+        schedule: None,
+        substitution_allowed: true,
+        pharmacy_id: None,
+        bypass_allergy_check: false,
+        dea_number: None,
+        bypass_reason_hash: None,
+    };
+
+    let template_id = client.create_template(&provider, &template);
+    // Template IDs start at 0
+    assert_eq!(template_id, 0);
+
+    // Issue a prescription independently (not from template) — should succeed.
+    let req = IssueRequest {
+        medication_name: String::from_str(&env, "Amoxicillin"),
+        ndc_code: String::from_str(&env, "0501-1234-01"),
+        dosage: String::from_str(&env, "500mg"),
+        quantity: 30,
+        days_supply: 10,
+        refills_allowed: 2,
+        instructions_hash: BytesN::from_array(&env, &[0u8; 32]),
+        is_controlled: false,
+        schedule: None,
+        valid_until: env.ledger().timestamp() + 86_400 * 30,
+        substitution_allowed: true,
+        pharmacy_id: Some(pharmacy.clone()),
+        bypass_allergy_check: false,
+        dea_number: None,
+        bypass_reason_hash: None,
+    };
+
+    let rx_id = client.issue_prescription(&provider, &patient, &req);
+    // Prescription IDs start at 0 (RxCounter)
+    assert_eq!(rx_id, 0);
+
+    // Verify the prescription was stored independently
+    let stored: Prescription = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&rx_id).unwrap()
+    });
+    assert_eq!(stored.medication_name, String::from_str(&env, "Amoxicillin"));
+    assert_eq!(stored.provider_id, provider);
+    assert_eq!(stored.patient_id, patient);
+
+    // Verify the template still exists independently
+    let stored_template: StoredTemplate = env.as_contract(&contract_id, || {
+        env.storage().persistent().get(&DataKey::Template(template_id)).unwrap()
+    });
+    assert_eq!(stored_template.medication_name, String::from_str(&env, "Lisinopril"));
+    assert_eq!(stored_template.provider, provider);
 }

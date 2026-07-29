@@ -343,3 +343,86 @@ fn test_review_after_sla_deadline_fails() {
     );
     assert!(result.is_err());
 }
+
+// ── Insurer binding (#684) ────────────────────────────────────────────────────
+
+#[test]
+fn test_reviewer_from_wrong_insurer_rejected() {
+    let (env, insurer, provider, patient) = setup();
+    let client = make_contract(&env, &insurer);
+
+    // Register a reviewer under the correct insurer
+    let reviewer_a = Address::generate(&env);
+    register_reviewer(&env, &client, &insurer, &reviewer_a);
+
+    // Create a second insurer that is also registered in the registry
+    let insurer_b = Address::generate(&env);
+    let ir_id = setup_insurer_registry(&env, &insurer_b);
+    // Register insurer_b in the registry via the same registry contract
+    let ir_client = InsurerRegistryClient::new(&env, &ir_id);
+    let issuer_b = Address::generate(&env);
+    ir_client.register_insurer(
+        &insurer_b,
+        &String::from_str(&env, "Insurer B"),
+        &String::from_str(&env, "LIC-002"),
+        &String::from_str(&env, "metadata"),
+        &dummy_hash(&env, 10),
+        &issuer_b,
+        &dummy_hash(&env, 11),
+        &4_100_000_000_u64,
+        &dummy_hash(&env, 12),
+    );
+    let mut svc_b = Vec::new(&env);
+    svc_b.push_back(String::from_str(&env, "CPT99213"));
+    let mut plans_b = Vec::new(&env);
+    plans_b.push_back(CoveragePlan {
+        plan_id: 10,
+        plan_name: String::from_str(&env, "Plan B"),
+        service_codes: svc_b,
+        is_active: true,
+        effective_from: 0,
+        effective_until: None,
+    });
+    ir_client.set_coverage_plans(&insurer_b, &plans_b);
+
+    // Register reviewer_b under insurer_b
+    let reviewer_b = Address::generate(&env);
+    let mut specialties = Vec::new(&env);
+    specialties.push_back(Symbol::new(&env, "general"));
+    client.register_reviewer(
+        &insurer_b,
+        &reviewer_b,
+        &Symbol::new(&env, "reviewer"),
+        &specialties,
+        &50u32,
+        &None,
+    );
+
+    // Submit a request against insurer
+    let auth_id = submit_auth(&env, &client, &provider, &patient, &insurer, &Symbol::new(&env, "routine"));
+
+    // Reviewer_b tries to review a request submitted against insurer — should be rejected
+    let result = client.try_review_authorization(
+        &auth_id,
+        &reviewer_b,
+        &Symbol::new(&env, "approved"),
+        &Some(10u32),
+        &Some(1_000_000u64),
+        &Some(9_000_000u64),
+        &String::from_str(&env, "Cross-insurer review attempt"),
+    );
+    assert!(result.is_err());
+
+    // Reviewer_a (correct insurer) should succeed
+    client.review_authorization(
+        &auth_id,
+        &reviewer_a,
+        &Symbol::new(&env, "approved"),
+        &Some(10u32),
+        &Some(1_000_000u64),
+        &Some(9_000_000u64),
+        &String::from_str(&env, "Legitimate review"),
+    );
+    let info = client.get_authorization_status(&auth_id, &provider);
+    assert!(matches!(info.status, AuthStatus::Approved));
+}

@@ -81,17 +81,6 @@ pub struct PatientStatusChanged {
 }
 
 /// --------------------
-/// Retention Class
-/// --------------------
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RetentionClass {
-    Clinical,
-    Financial,
-    Administrative,
-}
-
-/// --------------------
 /// Patient Structures
 /// --------------------
 #[contracttype]
@@ -1631,6 +1620,7 @@ impl MedicalRegistry {
         patient: Address,
         caller: Address,
     ) -> Result<Vec<MedicalRecord>, ContractError> {
+        caller.require_auth();
         let patient_key = DataKey::Patient(patient.clone());
         if let Some(data) = env
             .storage()
@@ -1646,7 +1636,6 @@ impl MedicalRegistry {
                 if caller != admin {
                     return Err(ContractError::NotAuthorized);
                 }
-                caller.require_auth();
             } else {
                 require_record_access(&env, &patient, &caller)?;
             }
@@ -1704,6 +1693,8 @@ impl MedicalRegistry {
             return Err(ContractError::InvalidPagination);
         }
 
+        caller.require_auth();
+
         // ── Access control (mirrors get_medical_records) ──────────────────────
         let patient_key = DataKey::Patient(patient.clone());
         if let Some(data) = env
@@ -1720,7 +1711,6 @@ impl MedicalRegistry {
                 if caller != admin {
                     return Err(ContractError::NotAuthorized);
                 }
-                caller.require_auth();
             } else {
                 require_record_access(&env, &patient, &caller)?;
             }
@@ -1774,6 +1764,7 @@ impl MedicalRegistry {
         patient: Address,
         caller: Address,
     ) -> Result<MedicalRecord, ContractError> {
+        caller.require_auth();
         let patient_key = DataKey::Patient(patient.clone());
         if let Some(data) = env
             .storage()
@@ -2059,6 +2050,7 @@ impl MedicalRegistry {
         caller: Address,
         record_type: Symbol,
     ) -> Result<Vec<MedicalRecord>, ContractError> {
+        caller.require_auth();
         require_record_access(&env, &patient, &caller)?;
 
         let ids_key = DataKey::PatientRecordIds(patient);
@@ -2109,6 +2101,7 @@ impl MedicalRegistry {
         if ids.len() > 10 {
             return Err(ContractError::TooManyIds);
         }
+        caller.require_auth();
         require_record_access(&env, &patient, &caller)?;
 
         let key = DataKey::MedicalRecords(patient.clone());
@@ -2525,6 +2518,7 @@ impl MedicalRegistry {
 
         let patient = record_data.patient.clone();
         Self::require_patient_exists(&env, &patient)?;
+        caller.require_auth();
         require_record_access(&env, &patient, &caller)?;
 
         // Guard: already deleted?

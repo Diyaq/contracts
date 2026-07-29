@@ -182,10 +182,6 @@ fn get_active_consent(env: &Env, patient: &Address, provider: &Address) -> Optio
     })
 }
 
-fn has_consent(env: &Env, patient: &Address, provider: &Address) -> bool {
-    get_active_consent(env, patient, provider).is_some()
-}
-
 #[contract]
 pub struct HealthRecords;
 
@@ -529,8 +525,12 @@ impl HealthRecords {
             .get(&DataKey::Record(record_id))
             .ok_or(Error::RecordNotFound)?;
 
-        if caller != record.patient && !has_consent(&env, &record.patient, &caller) {
-            return Err(Error::Unauthorized);
+        if caller != record.patient {
+            match get_active_consent(&env, &record.patient, &caller) {
+                None => return Err(Error::Unauthorized),
+                Some(s) if !s.can_write => return Err(Error::Unauthorized),
+                _ => {}
+            }
         }
 
         // Archive the current version before overwriting.
@@ -594,8 +594,12 @@ impl HealthRecords {
             .get(&DataKey::Record(record_id))
             .ok_or(Error::RecordNotFound)?;
 
-        if caller != current.patient && !has_consent(&env, &current.patient, &caller) {
-            return Err(Error::Unauthorized);
+        if caller != current.patient {
+            match get_active_consent(&env, &current.patient, &caller) {
+                None => return Err(Error::Unauthorized),
+                Some(s) if !s.can_read => return Err(Error::Unauthorized),
+                _ => {}
+            }
         }
 
         if version == current.version {

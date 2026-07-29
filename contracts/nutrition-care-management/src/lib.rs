@@ -339,12 +339,45 @@ impl NutritionCareContract {
         Ok(())
     }
 
+    /// One-time initialization of the contraindication admin.
+    /// Fails if an admin has already been set; use `set_contraindication_admin`
+    /// (called by the current admin) to rotate the admin afterwards.
+    pub fn initialize_contraindication_admin(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::ContraindicationAdmin)
+        {
+            return Err(Error::Unauthorized);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::ContraindicationAdmin, &admin);
+        Ok(())
+    }
+
     /// Set the admin address for managing contraindication lists.
+    ///
+    /// Only succeeds if no admin has been set yet (first-time setup), or if
+    /// called by the current admin (rotation). This prevents any caller from
+    /// self-appointing as admin once one has already been established.
     pub fn set_contraindication_admin(
         env: Env,
         admin: Address,
     ) -> Result<(), Error> {
         admin.require_auth();
+
+        if let Some(current_admin) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::ContraindicationAdmin)
+        {
+            if admin != current_admin {
+                return Err(Error::Unauthorized);
+            }
+        }
+
         env.storage()
             .instance()
             .set(&DataKey::ContraindicationAdmin, &admin);
@@ -435,13 +468,20 @@ impl NutritionCareContract {
     pub fn document_nutrition_intervention(
         env: Env,
         care_plan_id: u64,
+        dietitian_id: Address,
         intervention_date: u64,
         intervention_type: Symbol,
         topics_covered: Vec<String>,
         duration_minutes: u32,
         patient_comprehension: Symbol,
     ) -> Result<(), Error> {
+        dietitian_id.require_auth();
+
         load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+
+        if !is_provider_authorized(&env, care_plan_id, &dietitian_id) {
+            return Err(Error::ProviderNotAuthorized);
+        }
 
         let entry = NutritionIntervention {
             care_plan_id,
@@ -542,11 +582,18 @@ impl NutritionCareContract {
     pub fn assess_malnutrition_risk(
         env: Env,
         assessment_id: u64,
+        dietitian_id: Address,
         screening_tool: Symbol,
         score: u32,
         risk_level: Symbol,
     ) -> Result<(), Error> {
-        load_assessment(&env, assessment_id).ok_or(Error::AssessmentNotFound)?;
+        dietitian_id.require_auth();
+
+        let assessment = load_assessment(&env, assessment_id).ok_or(Error::AssessmentNotFound)?;
+
+        if assessment.dietitian_id != dietitian_id {
+            return Err(Error::ProviderNotAuthorized);
+        }
 
         // Validate screening tool
         let valid_tools = [
@@ -633,13 +680,20 @@ impl NutritionCareContract {
     pub fn evaluate_nutrition_outcomes(
         env: Env,
         care_plan_id: u64,
+        dietitian_id: Address,
         evaluation_date: u64,
         weight_change_kg_x100: i64,
         lab_improvements: Vec<String>,
         goals_met: Vec<String>,
         continue_care: bool,
     ) -> Result<(), Error> {
+        dietitian_id.require_auth();
+
         load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+
+        if !is_provider_authorized(&env, care_plan_id, &dietitian_id) {
+            return Err(Error::ProviderNotAuthorized);
+        }
 
         let evaluation = OutcomeEvaluation {
             care_plan_id,

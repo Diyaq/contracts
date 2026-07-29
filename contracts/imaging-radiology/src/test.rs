@@ -390,6 +390,87 @@ fn test_submit_final_report_already_exists() {
 }
 
 #[test]
+fn test_submit_report_addendum() {
+    let env = Env::default();
+    let contract_id = env.register(ImagingRadiology, ());
+    let client = ImagingRadiologyClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let imaging_center = Address::generate(&env);
+    let radiologist = Address::generate(&env);
+    env.mock_all_auths();
+
+    let order_id = client.order_imaging_study(
+        &provider,
+        &patient,
+        &Symbol::new(&env, "MAMMO"),
+        &String::from_str(&env, "Bilateral"),
+        &false,
+        &String::from_str(&env, "Screening"),
+        &Symbol::new(&env, "ROUTINE"),
+    );
+
+    let dicom_hash = BytesN::from_array(&env, &[50u8; 32]);
+    client.upload_images(
+        &order_id,
+        &imaging_center,
+        &dicom_hash,
+        &4,
+        &env.ledger().timestamp(),
+    );
+
+    let final_hash = BytesN::from_array(&env, &[60u8; 32]);
+    let impression = String::from_str(&env, "No evidence of malignancy. BI-RADS 1.");
+    client.submit_final_report(&order_id, &radiologist, &final_hash, &impression);
+
+    // Addendum correcting the original report is appended, not overwritten.
+    let addendum_hash = BytesN::from_array(&env, &[61u8; 32]);
+    let reason = String::from_str(&env, "Corrected laterality: right breast, not left.");
+    client.submit_report_addendum(&order_id, &radiologist, &addendum_hash, &reason);
+
+    // Original final report is untouched.
+    let report = client.get_final_report(&order_id, &patient).unwrap();
+    assert_eq!(report.final_report_hash, final_hash);
+    assert_eq!(report.impression, impression);
+
+    // Addendum is retrievable and distinct from the original report.
+    let addenda = client.get_report_addenda(&order_id, &patient);
+    assert_eq!(addenda.len(), 1);
+    let addendum = addenda.get(0).unwrap();
+    assert_eq!(addendum.radiologist_id, radiologist);
+    assert_eq!(addendum.addendum_hash, addendum_hash);
+    assert_eq!(addendum.reason, reason);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")]
+fn test_submit_report_addendum_without_final_report() {
+    let env = Env::default();
+    let contract_id = env.register(ImagingRadiology, ());
+    let client = ImagingRadiologyClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let radiologist = Address::generate(&env);
+    env.mock_all_auths();
+
+    let order_id = client.order_imaging_study(
+        &provider,
+        &patient,
+        &Symbol::new(&env, "CT"),
+        &String::from_str(&env, "Chest"),
+        &false,
+        &String::from_str(&env, "Cough"),
+        &Symbol::new(&env, "ROUTINE"),
+    );
+
+    let addendum_hash = BytesN::from_array(&env, &[62u8; 32]);
+    let reason = String::from_str(&env, "N/A");
+    client.submit_report_addendum(&order_id, &radiologist, &addendum_hash, &reason);
+}
+
+#[test]
 fn test_request_peer_review() {
     let env = Env::default();
     let contract_id = env.register(ImagingRadiology, ());

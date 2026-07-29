@@ -15,10 +15,10 @@
 To report a security issue, e-mail the maintainers at:
 
 ```
-security@kingfrankhood.dev
+security@healthy-stellar.dev
 ```
 
-Or use [GitHub's private vulnerability reporting](https://github.com/KingFRANKHOOD/contracts/security/advisories/new) feature.
+Or use [GitHub's private vulnerability reporting](https://github.com/Healthy-Stellar/contracts/security/advisories/new) feature.
 
 Include as much of the following information as possible to help us triage and resolve the issue quickly:
 

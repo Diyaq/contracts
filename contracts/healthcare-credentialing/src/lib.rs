@@ -48,6 +48,7 @@ pub enum Error {
     NotSuspended = 10,
     CredentialExpired = 11,
     RecredentialingInProgress = 12,
+    AlreadyInitialized = 13,
 }
 
 #[contracttype]
@@ -221,6 +222,9 @@ pub enum DataKey {
     ProviderFacilitySuspensions(Address, Address),
     ProviderFacilityReinstatements(Address, Address),
     ActiveRecredentialingCases(Address, Address),
+    Admin,
+    AuthorizedVerifier(Address),
+    CommitteeMember(Address),
 }
 
 #[contract]
@@ -228,6 +232,57 @@ pub struct HealthcareCredentialingSystem;
 
 #[contractimpl]
 impl HealthcareCredentialingSystem {
+    /// Initialize the contract with an admin, who alone may register authorized
+    /// verifiers and credentialing-committee members.
+    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        Ok(())
+    }
+
+    /// Register an address as an authorized credential verifier. Admin only.
+    pub fn add_authorized_verifier(env: Env, admin: Address, verifier: Address) -> Result<(), Error> {
+        admin.require_auth();
+        require_admin(&env, &admin)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::AuthorizedVerifier(verifier), &true);
+        Ok(())
+    }
+
+    /// Revoke an address's authorized-verifier status. Admin only.
+    pub fn remove_authorized_verifier(env: Env, admin: Address, verifier: Address) -> Result<(), Error> {
+        admin.require_auth();
+        require_admin(&env, &admin)?;
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AuthorizedVerifier(verifier));
+        Ok(())
+    }
+
+    /// Register an address as a credentialing-committee member. Admin only.
+    pub fn add_committee_member(env: Env, admin: Address, member: Address) -> Result<(), Error> {
+        admin.require_auth();
+        require_admin(&env, &admin)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::CommitteeMember(member), &true);
+        Ok(())
+    }
+
+    /// Revoke an address's credentialing-committee membership. Admin only.
+    pub fn remove_committee_member(env: Env, admin: Address, member: Address) -> Result<(), Error> {
+        admin.require_auth();
+        require_admin(&env, &admin)?;
+        env.storage()
+            .persistent()
+            .remove(&DataKey::CommitteeMember(member));
+        Ok(())
+    }
+
     pub fn initiate_credentialing(
         env: Env,
         provider_id: Address,
@@ -276,13 +331,18 @@ impl HealthcareCredentialingSystem {
     pub fn submit_credential_document(
         env: Env,
         case_id: u64,
+        caller: Address,
         document_type: Symbol, // medical_license, dea, board_cert, cv, references
         document_hash: BytesN<32>,
         issuing_authority: String,
         issue_date: u64,
         expiration_date: Option<u64>,
     ) -> Result<(), Error> {
+        caller.require_auth();
         let mut case = get_case(&env, case_id)?;
+        if caller != case.provider_id {
+            return Err(Error::NotAuthorized);
+        }
         if !is_supported_credential_type(&env, &document_type) {
             return Err(Error::InvalidCredentialType);
         }
@@ -322,6 +382,9 @@ impl HealthcareCredentialingSystem {
         verification_notes: String,
     ) -> Result<(), Error> {
         verifier.require_auth();
+        if !is_authorized_verifier(&env, &verifier) {
+            return Err(Error::NotAuthorized);
+        }
         let mut case = get_case(&env, case_id)?;
 
         let docs: Vec<CredentialDocument> = env
@@ -378,6 +441,9 @@ impl HealthcareCredentialingSystem {
         check_date: u64,
     ) -> Result<(), Error> {
         checker.require_auth();
+        if !is_authorized_verifier(&env, &checker) {
+            return Err(Error::NotAuthorized);
+        }
         let mut case = get_case(&env, case_id)?;
 
         let mut checks: Vec<SanctionCheckRecord> = env
@@ -413,6 +479,9 @@ impl HealthcareCredentialingSystem {
         recommended: bool,
     ) -> Result<(), Error> {
         reference_provider.require_auth();
+        if !is_authorized_verifier(&env, &reference_provider) {
+            return Err(Error::NotAuthorized);
+        }
         let mut case = get_case(&env, case_id)?;
         validate_competency_ratings(&competency_ratings)?;
 
@@ -450,6 +519,9 @@ impl HealthcareCredentialingSystem {
         expiration_date: u64,
     ) -> Result<(), Error> {
         credentialing_committee.require_auth();
+        if !is_committee_member(&env, &credentialing_committee) {
+            return Err(Error::NotAuthorized);
+        }
         let mut case = get_case(&env, case_id)?;
         if case.status != CredentialingStatus::CommitteeReview {
             return Err(Error::InvalidStatusTransition);
@@ -996,6 +1068,9 @@ impl HealthcareCredentialingSystem {
         new_expiration_date: u64,
     ) -> Result<(), Error> {
         credentialing_committee.require_auth();
+        if !is_committee_member(&env, &credentialing_committee) {
+            return Err(Error::NotAuthorized);
+        }
         let mut case = get_case(&env, case_id)?;
 
         if case.case_type != Symbol::new(&env, "reappointment") {
@@ -1048,6 +1123,32 @@ fn get_case(env: &Env, case_id: u64) -> Result<CredentialingCase, Error> {
         .persistent()
         .get(&DataKey::Case(case_id))
         .ok_or(Error::CaseNotFound)
+}
+
+fn require_admin(env: &Env, caller: &Address) -> Result<(), Error> {
+    let admin: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(Error::NotAuthorized)?;
+    if admin != *caller {
+        return Err(Error::NotAuthorized);
+    }
+    Ok(())
+}
+
+fn is_authorized_verifier(env: &Env, addr: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::AuthorizedVerifier(addr.clone()))
+        .unwrap_or(false)
+}
+
+fn is_committee_member(env: &Env, addr: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CommitteeMember(addr.clone()))
+        .unwrap_or(false)
 }
 
 fn is_supported_credential_type(env: &Env, credential_type: &Symbol) -> bool {

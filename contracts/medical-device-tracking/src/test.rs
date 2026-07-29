@@ -292,7 +292,7 @@ fn test_notify_affected_patients() {
         &String::from_str(&env, "Monitoring required"),
     );
 
-    let affected = client.notify_affected_patients(&recall_id, &1750100000u64);
+    let affected = client.notify_affected_patients(&manufacturer, &recall_id, &1750100000u64);
     assert_eq!(affected.len(), 2);
     assert!(affected.contains(patient1));
     assert!(affected.contains(patient2));
@@ -350,7 +350,7 @@ fn test_notify_affected_patients_excludes_removed() {
         &String::from_str(&env, "Software update required"),
     );
 
-    let affected = client.notify_affected_patients(&recall_id, &1750100000u64);
+    let affected = client.notify_affected_patients(&manufacturer, &recall_id, &1750100000u64);
     assert_eq!(affected.len(), 1);
     assert!(affected.contains(patient2));
 }
@@ -362,8 +362,91 @@ fn test_notify_affected_patients_recall_not_found() {
 
     let client = setup_client(&env);
 
-    let res = client.try_notify_affected_patients(&999u64, &1750100000u64);
+    let res = client.try_notify_affected_patients(&Address::generate(&env), &999u64, &1750100000u64);
     assert!(res.is_err());
+}
+
+#[test]
+fn test_notify_affected_patients_rejects_unauthorized_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = setup_client(&env);
+
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let manufacturer = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    let device_id = register_device_helper(&env, &client, &manufacturer);
+    client.implant_device(
+        &patient,
+        &device_id,
+        &provider,
+        &1700000000u64,
+        &String::from_str(&env, "Left Knee"),
+        &dummy_hash(&env),
+    );
+
+    let mut device_ids: Vec<u64> = Vec::new(&env);
+    device_ids.push_back(device_id);
+
+    let recall_id = client.issue_device_recall(
+        &manufacturer,
+        &device_ids,
+        &String::from_str(&env, "Stress fracture risk"),
+        &Symbol::new(&env, "HIGH"),
+        &1750000000u64,
+        &String::from_str(&env, "Monitoring required"),
+    );
+
+    // A caller who is neither the recall issuer nor the configured regulator
+    // must not be able to enumerate affected patients.
+    let res = client.try_notify_affected_patients(&stranger, &recall_id, &1750100000u64);
+    assert_eq!(res.unwrap_err().unwrap(), Error::NotAuthorized);
+}
+
+#[test]
+fn test_notify_affected_patients_allows_configured_regulator() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MedicalDeviceRegistry, ());
+    let client = MedicalDeviceRegistryClient::new(&env, &contract_id);
+    let regulator = Address::generate(&env);
+    client.initialize(&regulator);
+
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let manufacturer = Address::generate(&env);
+
+    let device_id = register_device_helper(&env, &client, &manufacturer);
+    client.implant_device(
+        &patient,
+        &device_id,
+        &provider,
+        &1700000000u64,
+        &String::from_str(&env, "Left Knee"),
+        &dummy_hash(&env),
+    );
+
+    let mut device_ids: Vec<u64> = Vec::new(&env);
+    device_ids.push_back(device_id);
+
+    let recall_id = client.issue_device_recall(
+        &manufacturer,
+        &device_ids,
+        &String::from_str(&env, "Stress fracture risk"),
+        &Symbol::new(&env, "HIGH"),
+        &1750000000u64,
+        &String::from_str(&env, "Monitoring required"),
+    );
+
+    // The configured regulator has oversight of all recalls, even ones it
+    // did not personally issue.
+    let affected = client.notify_affected_patients(&regulator, &recall_id, &1750100000u64);
+    assert_eq!(affected.len(), 1);
+    assert!(affected.contains(patient));
 }
 
 #[test]
@@ -542,7 +625,7 @@ fn test_falsely_removed_implant_cannot_suppress_recall_notification() {
     );
 
     // The patient must still be surfaced for recall notification.
-    let affected = client.notify_affected_patients(&recall_id, &1750100000u64);
+    let affected = client.notify_affected_patients(&manufacturer, &recall_id, &1750100000u64);
     assert_eq!(affected.len(), 1);
     assert!(affected.contains(patient_id));
 }
