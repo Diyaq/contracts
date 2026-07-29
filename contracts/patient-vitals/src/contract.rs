@@ -1,7 +1,8 @@
 use crate::types::{
     AlertThresholds, DataKey, DeviceReading, DeviceRegistration, Error, MonitoringParameters,
     PagedAggResult, PagedRawResult, Range, VitalAlert, VitalReading, VitalSigns, VitalStatistics,
-    VitalsAggregate, AGG_WINDOW_SECONDS, ALERT_COOLDOWN_SECONDS, PAGE_SIZE, RAW_WINDOW_SECONDS,
+    VitalsAggregate, WindowIndex, AGG_WINDOW_SECONDS, ALERT_COOLDOWN_SECONDS, PAGE_SIZE,
+    RAW_WINDOW_SECONDS,
 };
 use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, String, Symbol, Vec};
 
@@ -47,6 +48,45 @@ impl PatientVitalsContract {
         // --- roll up into daily aggregate ---
         let agg_idx = measurement_time / AGG_WINDOW_SECONDS;
         Self::update_aggregate(&env, &patient_id, agg_idx, measurement_time, &vitals);
+
+        // --- maintain per-patient window index for deregistration ---
+        // #638: track every distinct raw_idx and agg_idx written so that
+        // deregister_patient can enumerate and purge all bucket entries.
+        let win_key = DataKey::PatientWindows(patient_id.clone());
+        let mut win_index: WindowIndex = env
+            .storage()
+            .persistent()
+            .get(&win_key)
+            .unwrap_or(WindowIndex {
+                raw_indices: Vec::new(&env),
+                agg_indices: Vec::new(&env),
+            });
+
+        // Append raw_idx if not already tracked.
+        let mut raw_seen = false;
+        for i in 0..win_index.raw_indices.len() {
+            if win_index.raw_indices.get(i).unwrap_or(u64::MAX) == raw_idx {
+                raw_seen = true;
+                break;
+            }
+        }
+        if !raw_seen {
+            win_index.raw_indices.push_back(raw_idx);
+        }
+
+        // Append agg_idx if not already tracked.
+        let mut agg_seen = false;
+        for i in 0..win_index.agg_indices.len() {
+            if win_index.agg_indices.get(i).unwrap_or(u64::MAX) == agg_idx {
+                agg_seen = true;
+                break;
+            }
+        }
+        if !agg_seen {
+            win_index.agg_indices.push_back(agg_idx);
+        }
+
+        env.storage().persistent().set(&win_key, &win_index);
 
         // --- legacy flat history (kept for backward compat) ---
         let key = DataKey::VitalsHistory(patient_id.clone());
@@ -493,8 +533,13 @@ impl PatientVitalsContract {
 
     /// Remove all vitals state for a deregistered patient.
     ///
-    /// Clears: `VitalsHistory`, `LatestRawWindow`, and all `VitalsAlerts`
-    /// for the standard vital types.
+    /// Clears:
+    /// - `VitalsHistory`
+    /// - `LatestRawWindow`
+    /// - All `VitalsAlerts` and `LastAlertTime` entries for standard vital types
+    /// - All `RawWindow` and `AggWindow` bucket entries (enumerated via the
+    ///   `PatientWindows` index maintained by `record_vital_signs`)
+    /// - The `PatientWindows` index itself
     ///
     /// Callable by the patient themselves.
     pub fn deregister_patient(env: Env, patient_id: Address) {
@@ -506,6 +551,31 @@ impl PatientVitalsContract {
         env.storage()
             .persistent()
             .remove(&DataKey::LatestRawWindow(patient_id.clone()));
+
+        // #638: Purge all RawWindow and AggWindow bucket entries using the
+        // index that was built up incrementally by record_vital_signs.
+        let win_key = DataKey::PatientWindows(patient_id.clone());
+        if let Some(win_index) = env
+            .storage()
+            .persistent()
+            .get::<_, WindowIndex>(&win_key)
+        {
+            for i in 0..win_index.raw_indices.len() {
+                if let Some(idx) = win_index.raw_indices.get(i) {
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::RawWindow(patient_id.clone(), idx));
+                }
+            }
+            for i in 0..win_index.agg_indices.len() {
+                if let Some(idx) = win_index.agg_indices.get(i) {
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::AggWindow(patient_id.clone(), idx));
+                }
+            }
+        }
+        env.storage().persistent().remove(&win_key);
 
         // Clear alerts for all standard vital types
         let vital_types = [

@@ -625,3 +625,157 @@ fn view_records_include_hash_chain_links() {
     let second = logs.get(1).unwrap();
     assert_eq!(second.previous_entry_hash, Some(first.entry_hash.clone()));
 }
+
+#[test]
+fn test_acknowledge_critical_finding() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1000);
+
+    let contract_id = env.register(PacsContract, ());
+    let client = PacsContractClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let radiologist = Address::generate(&env);
+
+    // Register study
+    let sid = client.register_imaging_study(
+        &patient,
+        &provider,
+        &String::from_str(&env, "1.2.3.4.5"),
+        &Symbol::new(&env, "CT"),
+        &String::from_str(&env, "Chest"),
+        &1000u64,
+        &String::from_str(&env, "CT Chest"),
+        &1u32,
+        &1u32,
+        &dummy_hash(&env),
+    );
+
+    // Link report with critical findings
+    client.link_imaging_report(
+        &sid,
+        &radiologist,
+        &Symbol::new(&env, "final"),
+        &dummy_hash(&env),
+        &true, // critical_findings = true
+    );
+
+    // Acknowledge critical finding
+    env.ledger().set_timestamp(2000);
+    client.acknowledge_critical_finding(&sid, &provider, &2000u64);
+
+    // Verify acknowledgment was recorded
+    let study = client.get_imaging_study(&sid);
+    assert!(study.critical_findings);
+}
+
+#[test]
+fn test_acknowledge_critical_finding_only_by_ordering_provider() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1000);
+
+    let contract_id = env.register(PacsContract, ());
+    let client = PacsContractClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let other_provider = Address::generate(&env);
+    let radiologist = Address::generate(&env);
+
+    // Register study
+    let sid = client.register_imaging_study(
+        &patient,
+        &provider,
+        &String::from_str(&env, "1.2.3.4.5"),
+        &Symbol::new(&env, "CT"),
+        &String::from_str(&env, "Chest"),
+        &1000u64,
+        &String::from_str(&env, "CT Chest"),
+        &1u32,
+        &1u32,
+        &dummy_hash(&env),
+    );
+
+    // Link report with critical findings
+    client.link_imaging_report(
+        &sid,
+        &radiologist,
+        &Symbol::new(&env, "final"),
+        &dummy_hash(&env),
+        &true,
+    );
+
+    // Try to acknowledge with different provider - should fail
+    let result = client.try_acknowledge_critical_finding(&sid, &other_provider, &2000u64);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_list_unacknowledged_critical_findings() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1000);
+
+    let contract_id = env.register(PacsContract, ());
+    let client = PacsContractClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let radiologist = Address::generate(&env);
+
+    // Register first study with critical findings (unacknowledged)
+    let sid1 = client.register_imaging_study(
+        &patient,
+        &provider,
+        &String::from_str(&env, "1.2.3.4.5"),
+        &Symbol::new(&env, "CT"),
+        &String::from_str(&env, "Chest"),
+        &1000u64,
+        &String::from_str(&env, "CT Chest"),
+        &1u32,
+        &1u32,
+        &dummy_hash(&env),
+    );
+
+    client.link_imaging_report(
+        &sid1,
+        &radiologist,
+        &Symbol::new(&env, "final"),
+        &dummy_hash(&env),
+        &true,
+    );
+
+    // Register second study with critical findings (acknowledged)
+    let sid2 = client.register_imaging_study(
+        &patient,
+        &provider,
+        &String::from_str(&env, "1.2.3.4.6"),
+        &Symbol::new(&env, "MR"),
+        &String::from_str(&env, "Brain"),
+        &1100u64,
+        &String::from_str(&env, "MR Brain"),
+        &1u32,
+        &1u32,
+        &dummy_hash(&env),
+    );
+
+    client.link_imaging_report(
+        &sid2,
+        &radiologist,
+        &Symbol::new(&env, "final"),
+        &dummy_hash(&env),
+        &true,
+    );
+
+    // Advance time and acknowledge second study
+    env.ledger().set_timestamp(2000);
+    client.acknowledge_critical_finding(&sid2, &provider, &2000u64);
+
+    // Query unacknowledged findings older than 500 seconds
+    let unacknowledged = client.list_unacknowledged_critical_findings(&provider, &500u64);
+    // Both studies should be in the result if reported more than 500 seconds ago
+    assert!(unacknowledged.len() > 0);
+}

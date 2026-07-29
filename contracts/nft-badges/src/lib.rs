@@ -41,6 +41,7 @@ pub enum Error {
     /// Soulbound tokens may never be transferred.
     Soulbound         = 5,
     AlreadyMinted     = 6,
+    AlreadyRevoked    = 7,
 }
 
 #[contracttype]
@@ -60,6 +61,8 @@ pub struct BadgeMetadata {
     pub achievement: String,   // human-readable title
     pub issued_at:   u64,
     pub metadata_uri: String,  // IPFS / off-chain URI
+    pub revoked:      bool,
+    pub revoked_reason: Option<String>,
 }
 
 #[contract]
@@ -94,6 +97,20 @@ impl NftBadgesContract {
             return Err(Error::Unauthorized);
         }
 
+        let mut badges: Vec<u64> = env.storage().persistent()
+            .get(&DataKey::OwnerBadges(recipient.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+
+        for existing_id in badges.iter() {
+            if let Some(existing) = env.storage().persistent()
+                .get::<_, BadgeMetadata>(&DataKey::Badge(existing_id))
+            {
+                if existing.badge_type == badge_type {
+                    return Err(Error::AlreadyMinted);
+                }
+            }
+        }
+
         let id: u64 = env.storage().instance()
             .get(&DataKey::NextId)
             .unwrap_or(1);
@@ -105,13 +122,12 @@ impl NftBadgesContract {
             achievement,
             issued_at:    env.ledger().timestamp(),
             metadata_uri,
+            revoked:      false,
+            revoked_reason: None,
         };
 
         env.storage().persistent().set(&DataKey::Badge(id), &badge);
 
-        let mut badges: Vec<u64> = env.storage().persistent()
-            .get(&DataKey::OwnerBadges(recipient.clone()))
-            .unwrap_or_else(|| Vec::new(&env));
         badges.push_back(id);
         env.storage().persistent().set(&DataKey::OwnerBadges(recipient.clone()), &badges);
 
@@ -127,6 +143,36 @@ impl NftBadgesContract {
     /// Always panics — badges are soulbound and non-transferable.
     pub fn transfer(_env: Env, _from: Address, _to: Address, _id: u64) -> Result<(), Error> {
         Err(Error::Soulbound)
+    }
+
+    /// Revoke a previously minted badge. Restricted to the stored admin.
+    /// The badge is flagged as revoked (with a reason) rather than deleted.
+    pub fn revoke(env: Env, admin: Address, badge_id: u64, reason: String) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+
+        let mut badge: BadgeMetadata = env.storage().persistent()
+            .get(&DataKey::Badge(badge_id))
+            .ok_or(Error::BadgeNotFound)?;
+
+        if badge.revoked {
+            return Err(Error::AlreadyRevoked);
+        }
+
+        badge.revoked = true;
+        badge.revoked_reason = Some(reason);
+        env.storage().persistent().set(&DataKey::Badge(badge_id), &badge);
+
+        env.events().publish(
+            (symbol_short!("REVOKE"), badge.recipient),
+            badge_id,
+        );
+        Ok(())
     }
 
     pub fn get_badge(env: Env, id: u64) -> Result<BadgeMetadata, Error> {

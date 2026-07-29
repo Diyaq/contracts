@@ -177,7 +177,7 @@ fn test_unregistered_insurer_cannot_adjudicate() {
         &Vec::new(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
-        &5000,
+        &15000,
     );
 
     let result =
@@ -203,7 +203,7 @@ fn test_wrong_insurer_cannot_adjudicate() {
         &Vec::new(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
-        &5000,
+        &15000,
     );
 
     let result = client.try_adjudicate_claim(
@@ -234,7 +234,7 @@ fn test_unregistered_insurer_cannot_process_payment() {
         &Vec::new(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
-        &5000,
+        &15000,
     );
 
     client.adjudicate_claim(
@@ -268,7 +268,7 @@ fn test_submit_claim_with_unregistered_insurer_fails() {
         &Vec::new(&env),
         &BytesN::from_array(&env, &[0; 32]),
         &policy(&env),
-        &5000,
+        &15000,
     );
     assert_eq!(result, Err(Ok(Error::InsurerNotRegistered)));
 }
@@ -289,7 +289,7 @@ fn test_appeal_workflow() {
         &Vec::new(&env),
         &BytesN::from_array(&env, &[1; 32]),
         &policy(&env),
-        &25000,
+        &15000,
     );
 
     let mut denials = Vec::new(&env);

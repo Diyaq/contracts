@@ -87,7 +87,7 @@ jobs:
 
       - name: Install soroban-cli
         run: |
-          cargo install --locked soroban-cli --features opt
+          cargo install --locked soroban-cli
 
       - name: Configure Soroban identity
         env:

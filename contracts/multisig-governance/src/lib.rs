@@ -54,6 +54,8 @@ pub enum Error {
     AlreadySigner      = 12,
     /// Removing this signer would make the threshold unreachable.
     ThresholdBreached  = 13,
+    /// Removing this signer would make the quorum minimum unreachable.
+    QuorumBreached     = 14,
 }
 
 #[contracttype]
@@ -140,6 +142,9 @@ impl MultisigGovernance {
         if threshold == 0 || threshold as usize > signers.len() as usize {
             return Err(Error::InvalidThreshold);
         }
+        if quorum_min > signers.len() {
+            return Err(Error::InvalidThreshold);
+        }
         env.storage().persistent().set(&DataKey::Signers, &signers);
         env.storage()
             .persistent()
@@ -162,8 +167,38 @@ impl MultisigGovernance {
         Self::assert_signer(&env, &signer)?;
 
         let key = DataKey::Proposal(action_id.clone());
-        if env.storage().persistent().has(&key) {
-            return Err(Error::ProposalExists);
+
+        // #636: Atomic read-then-decide guard (mirrors the fix applied to
+        // propose_signer_change in #305).
+        //
+        // The previous code used a two-step has() → set() pattern which meant
+        // that an action_id whose proposal expired without being explicitly
+        // cleaned up via cleanup_expired_proposals could never be reused —
+        // callers were permanently blocked from re-proposing the same action.
+        //
+        // Fix: read the full proposal in one operation, then decide:
+        //   • Pending + still within TTL  → block; return ProposalExists
+        //   • Pending + TTL elapsed       → allow; overwrite the stale entry
+        //   • Executed / Failed           → allow; the slot is logically free
+        //   • No entry                   → allow
+        if let Some(existing) = env
+            .storage()
+            .persistent()
+            .get::<_, Proposal>(&key)
+        {
+            if existing.status == ProposalStatus::Pending {
+                let ttl: u64 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::Ttl)
+                    .ok_or(Error::NotInitialized)?;
+                if env.ledger().timestamp() <= existing.proposed_at + ttl {
+                    // Active proposal still within its TTL — reject.
+                    return Err(Error::ProposalExists);
+                }
+                // Expired pending proposal — fall through and overwrite.
+            }
+            // Finalized (Executed / Failed) proposals do not block new ones.
         }
 
         // Snapshot the eligible signer set at proposal time (#232).
@@ -484,6 +519,15 @@ impl MultisigGovernance {
                 // After removal there must still be enough signers to meet threshold.
                 if signers.len() <= threshold {
                     return Err(Error::ThresholdBreached);
+                }
+                // After removal there must still be enough signers to meet quorum.
+                let quorum_min: u32 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::QuorumMin)
+                    .unwrap_or(0);
+                if signers.len() - 1 < quorum_min {
+                    return Err(Error::QuorumBreached);
                 }
                 // Target must be a current signer.
                 if !is_signer(&env, &signers, &target) {

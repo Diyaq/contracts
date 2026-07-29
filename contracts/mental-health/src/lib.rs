@@ -54,6 +54,8 @@ pub enum Error {
     RequiresExplicitConsent = 3,
     /// Cross-contract escalation call to emergency-medical-info failed
     EscalationFailed = 4,
+    /// Screening total_score is outside the clinical instrument's valid range
+    InvalidScore = 5,
 }
 
 #[contracttype]
@@ -371,10 +373,17 @@ impl MentalHealthContract {
     pub fn record_phq9_score(
         env: Env,
         assessment_id: u64,
+        provider_id: Address,
         total_score: u32,
         _item_scores: Vec<u32>,
         _assessment_date: u64,
     ) -> Result<(), Error> {
+        provider_id.require_auth();
+
+        if total_score > 27 {
+            return Err(Error::InvalidScore);
+        }
+
         let mut assessment: MentalHealthAssessment = env
             .storage()
             .persistent()
@@ -392,10 +401,17 @@ impl MentalHealthContract {
     pub fn record_gad7_score(
         env: Env,
         assessment_id: u64,
+        provider_id: Address,
         total_score: u32,
         _item_scores: Vec<u32>,
         _assessment_date: u64,
     ) -> Result<(), Error> {
+        provider_id.require_auth();
+
+        if total_score > 21 {
+            return Err(Error::InvalidScore);
+        }
+
         let mut assessment: MentalHealthAssessment = env
             .storage()
             .persistent()
@@ -578,6 +594,8 @@ impl MentalHealthContract {
             .get(&DataKey::TreatmentPlan(treatment_plan_id))
             .ok_or(Error::NotFound)?;
 
+        plan.provider_id.require_auth();
+
         Self::validate_explicit_consent(
             &env,
             &plan.patient_id,
@@ -655,6 +673,8 @@ impl MentalHealthContract {
         facility_id: Address,
         discharge_date: Option<u64>,
     ) -> Result<u64, Error> {
+        facility_id.require_auth();
+
         // Validate explicit consent for hospitalization records
         Self::validate_explicit_consent(
             &env,
@@ -744,6 +764,8 @@ impl MentalHealthContract {
             .persistent()
             .get(&DataKey::TreatmentPlan(treatment_plan_id))
             .ok_or(Error::NotFound)?;
+
+        plan.provider_id.require_auth();
 
         Self::validate_explicit_consent(
             &env,

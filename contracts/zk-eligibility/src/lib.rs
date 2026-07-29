@@ -38,6 +38,10 @@ pub const MAX_PROOF_BYTES: u32 = 512;
 pub const MAX_BATCH_SIZE: u32 = 10;
 /// Default nullifier TTL in ledgers when not explicitly configured (~1 day at 5s/ledger).
 pub const DEFAULT_NULLIFIER_TTL_LEDGERS: u32 = 17_280;
+/// Window (in seconds) within which a new admin must accept the rotation (~24 hours).
+pub const ADMIN_ROTATION_WINDOW: u64 = 86_400;
+/// Index of the expiry timestamp in the public inputs array.
+pub const EXPIRY_INPUT_IDX: u32 = 0;
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -55,6 +59,11 @@ pub enum Error {
     ProofAlreadyUsed     = 8,
     VerificationFailed   = 9,
     BatchTooLarge        = 10,
+    RotationPending      = 11,
+    NoRotationPending    = 12,
+    NotPendingAdmin      = 13,
+    RotationExpired      = 14,
+    ProofExpired         = 15,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -71,6 +80,8 @@ pub enum DataKey {
     Eligibility(Address),
     /// Configurable TTL (in ledgers) for nullifier entries.
     NullifierTtlLedgers,
+    PendingAdmin,
+    RotationExpiry,
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────

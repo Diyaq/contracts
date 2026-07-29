@@ -1,37 +1,38 @@
-# Stellar Mainnet Go-Live Checklist
+# Mainnet Readiness
 
-This document outlines the production readiness review required before deploying Healthy Stellar contracts to Stellar Mainnet.
+> **Current status: NOT YET DEPLOYED**
+>
+> No contracts from this repository have been deployed to Stellar Mainnet.
+> `deployments/mainnet.json` is a placeholder stub. Until the pre-flight
+> checklist below is satisfied and a real deployment run is executed, TTL
+> extension and any other mainnet-specific automation is **inactive** and
+> not urgent.
 
-## Pre-Deployment Requirements
+## Pre-flight checklist
 
-### Security
+Complete every item before running the first mainnet deployment.
 
-- [ ] All contracts audited by an independent security firm
-- [ ] All critical and high findings from the audit resolved and verified closed
-- [ ] Penetration test of cross-contract call graph completed
-- [ ] Admin keypairs stored in HSM or multi-sig wallet (not a single EOA)
-- [ ] No hardcoded secrets or private keys in the codebase
-- [ ] All authentication and access control mechanisms reviewed for bypass vulnerabilities
+### Code quality
 
-### Compliance
+- [ ] `cargo test --workspace` passes with zero failures
+- [ ] `cargo clippy --workspace -- -D warnings` produces no warnings
+- [ ] `cargo fmt --all --check` passes
+- [ ] All contracts audited or peer-reviewed for logic errors
+- [ ] Security audit (`cargo audit`) shows no unaddressed vulnerabilities
 
-- [ ] HIPAA Security Rule gap analysis completed
-- [ ] Data Processing Agreement with Stellar Foundation reviewed and signed
-- [ ] GDPR data residency requirements assessed (acknowledge on-chain data is public and permanent)
-- [ ] Legal review of storing PHI references on a public blockchain completed
-- [ ] Documentation on data minimization and encryption strategies in place
+### Key management
 
-### Operations
+- [ ] Deployer identity is a hardware wallet or multi-sig Stellar account
+  — **never** a plain CI secret key for mainnet
+- [ ] Governance signers (multisig-governance) have been confirmed and keys
+      are secured
+- [ ] Admin keys are stored in offline / HSM storage
 
-- [ ] TTL extension cron job configured and tested in production-like environment
-- [ ] Incident response runbook published and tested
-- [ ] On-call rotation established for contract emergency response
-- [ ] Backup admin keypair stored in geographically separate cold storage
-- [ ] Monitoring infrastructure deployed and tested
-- [ ] Log aggregation and alerting configured
-- [ ] Communication plan for deployment day finalized
+### Governance setup
 
-### Contracts
+- [ ] `multisig-governance` contract deployed first (dependency for upgrades)
+- [ ] `upgrade-governance` contract deployed second
+- [ ] Governance thresholds and signer set verified on-chain
 
 - [ ] All 80 open issues resolved or explicitly deferred (with rationale documented)
 - [ ] `cargo test --workspace` passes with zero compilation errors
@@ -42,24 +43,30 @@ This document outlines the production readiness review required before deploying
 - [ ] Deployment manifest published and verified (see SECURITY.md)
 - [ ] Dry-run deployment executed against a Mainnet preview/staging environment
 
-### Monitoring
+- [ ] Dry-run completed: `./scripts/deploy_all.sh --network mainnet --dry-run`
+- [ ] All contract WASMs build cleanly for `wasm32v1-none`
+- [ ] WASM hashes recorded before deployment submission
+- [ ] Deployment run: `./scripts/deploy_all.sh --network mainnet`
+- [ ] `deployments/mainnet.json` populated with all deployed contract IDs
+      (status field set to `"complete"`)
 
-- [ ] Alerting set up for TTL approaching threshold (< 24 hours)
-- [ ] Dashboard for active prescriptions, trial enrolments, and claim counts deployed
-- [ ] Anomaly detection for unusual transaction volume configured
-- [ ] Metrics collection validated (response times, error rates, contract invocation counts)
-- [ ] Baseline performance metrics recorded before launch
+### Post-deployment verification
 
-## Deployment Process
+- [ ] Every contract ID in `deployments/mainnet.json` verified against
+      Horizon / Stellar Expert WASM hash
+- [ ] Smoke test: read-only invocation on each deployed contract succeeds
+- [ ] Governance contracts accept a test proposal and reject unauthorised
+      callers
 
-### Pre-Deployment Verification
+### TTL management
 
-1. **Code review**: All changes since previous release reviewed and tested
-2. **Build verification**: Production WASM artifacts built and hashes recorded
-3. **Manifest generation**: `./scripts/deploy_all.sh --network mainnet --dry-run` executed
-4. **Smoke tests**: Simple invocations tested against a staging environment
+Once contracts are live, set up the `extend-ttls.yml` cron workflow (see
+`.github/workflows/extend-ttls.yml`) to extend contract storage TTLs on a
+weekly schedule.  The workflow will **fail loudly** (`exit 1`) if
+`deployments/mainnet.json` is missing or has `_status != "complete"`, so
+it is safe to enable it as soon as the manifest is populated.
 
-### Deployment Execution
+## How to update this document after deployment
 
 1. Configure `STELLAR_IDENTITY` to point to the production admin multi-sig account or HSM
 2. Execute deployment with monitoring enabled:
