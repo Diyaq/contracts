@@ -36,6 +36,14 @@ pub const MAX_DEPARTMENTS: u32 = 200;
 pub const MAX_LOCATIONS: u32 = 50;
 /// Maximum number of equipment resources a hospital configuration may contain.
 pub const MAX_EQUIPMENT: u32 = 100;
+/// Maximum number of policies/procedures a hospital configuration may contain.
+pub const MAX_POLICIES: u32 = 100;
+/// Maximum number of alert settings a hospital configuration may contain.
+pub const MAX_ALERTS: u32 = 50;
+/// Maximum number of insurance providers a hospital configuration may contain.
+pub const MAX_INSURANCE_PROVIDERS: u32 = 100;
+/// Maximum number of emergency protocols a hospital configuration may contain.
+pub const MAX_EMERGENCY_PROTOCOLS: u32 = 50;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -169,6 +177,7 @@ pub struct AuditEvent {
 pub enum DataKey {
     Hospital(Address),
     HospitalConfig(Address),
+    /// The singleton admin address; stored at initialization time.
     Admin,
 }
 
@@ -198,6 +207,73 @@ impl HospitalRegistry {
             return Err(ContractError::CredentialExpired);
         }
         Ok(())
+    }
+
+    /// Authorization check for config-mutation entry points.
+    ///
+    /// Authorized if:
+    /// - `caller` is the hospital wallet that owns `hospital_address`, **or**
+    /// - `caller` is the registered admin (set via `initialize_admin`).
+    ///
+    /// This makes the admin-override branch reachable: callers that pass a
+    /// distinct `caller` address (not equal to `hospital_address`) will take
+    /// the admin path when the addresses match the stored admin key.
+    fn assert_config_auth(
+        env: &Env,
+        caller: &Address,
+        hospital_address: &Address,
+    ) -> Result<(), ContractError> {
+        caller.require_auth();
+        if caller == hospital_address {
+            // Hospital is acting on its own config — verify the address
+            // actually has an active registration.
+            Self::assert_active_hospital(env, hospital_address)?;
+            return Ok(());
+        }
+        // Different caller — check if they are the registered admin.
+        if let Some(admin) = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::Admin)
+        {
+            if caller == &admin {
+                // Admin override: the hospital must still be registered (but
+                // credential expiry is allowed so the admin can fix things).
+                Self::load_hospital(env, hospital_address)?;
+                return Ok(());
+            }
+        }
+        Err(ContractError::HospitalNotFound) // reuse closest available error
+    }
+
+    /// Store the admin address once.  Subsequent calls are no-ops if the same
+    /// admin calls again; a different caller will be rejected by require_auth.
+    ///
+    /// In practice, the very first call after contract deployment should set
+    /// the admin, before any hospital is registered.
+    pub fn initialize_admin(env: Env, admin: Address) -> Result<(), ContractError> {
+        validate_nonzero_address(&admin).map_err(|_| ContractError::InvalidAddress)?;
+        admin.require_auth();
+        // Idempotent: allow the same admin to re-confirm, but do not let a
+        // different address overwrite the existing admin.
+        if let Some(existing) = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&DataKey::Admin)
+        {
+            if existing != admin {
+                // Already initialized with a different admin.
+                return Err(ContractError::HospitalAlreadyRegistered);
+            }
+            return Ok(()); // same admin — idempotent
+        }
+        env.storage().persistent().set(&DataKey::Admin, &admin);
+        Ok(())
+    }
+
+    /// Return the registered admin address, if any.
+    pub fn get_admin(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::Admin)
     }
 
     fn default_config(env: &Env) -> HospitalConfig {
@@ -347,6 +423,39 @@ impl HospitalRegistry {
         Ok(())
     }
 
+    /// Admin-only: revoke a hospital's credential by setting its `revoked_at` timestamp (#682).
+    /// Once revoked, all state-mutating calls on that hospital will fail with `CredentialRevoked`.
+    pub fn revoke_hospital_credential(
+        env: Env,
+        admin: Address,
+        wallet: Address,
+    ) -> Result<(), ContractError> {
+        validate_nonzero_address(&admin).map_err(|_| ContractError::InvalidAddress)?;
+        validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(ContractError::NotAuthorized)?;
+        if admin != stored_admin {
+            return Err(ContractError::NotAuthorized);
+        }
+
+        let mut hospital = Self::load_hospital(&env, &wallet)?;
+        hospital.credential.revoked_at = Some(env.ledger().timestamp());
+        env.storage()
+            .persistent()
+            .set(&DataKey::Hospital(wallet.clone()), &hospital);
+
+        env.events().publish(
+            (symbol_short!("rev_hosp"), wallet),
+            symbol_short!("success"),
+        );
+        Ok(())
+    }
+
     pub fn get_hospital(env: Env, wallet: Address) -> Result<HospitalData, ContractError> {
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
         Self::load_hospital(&env, &wallet)
@@ -358,12 +467,13 @@ impl HospitalRegistry {
 
     pub fn set_hospital_config(
         env: Env,
+        caller: Address,
         wallet: Address,
         config: HospitalConfig,
     ) -> Result<(), ContractError> {
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
-        Self::assert_config_auth(&env, &wallet, &wallet)?;
-        Self::assert_active_hospital(&env, &wallet)?;
+        validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
+        Self::assert_config_auth(&env, &caller, &wallet)?;
 
         if config.departments.len() > MAX_DEPARTMENTS {
             return Err(ContractError::ConfigLimitExceeded);
@@ -385,7 +495,7 @@ impl HospitalRegistry {
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
 
-        Self::emit_audit(&env, &wallet, "config", old, config);
+        Self::emit_audit(&env, &caller, "config", old, config);
         Ok(())
     }
 
@@ -399,12 +509,13 @@ impl HospitalRegistry {
 
     pub fn update_departments(
         env: Env,
+        caller: Address,
         wallet: Address,
         departments: Vec<Department>,
     ) -> Result<(), ContractError> {
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
-        Self::assert_config_auth(&env, &wallet, &wallet)?;
-        Self::assert_active_hospital(&env, &wallet)?;
+        validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
+        Self::assert_config_auth(&env, &caller, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
         if departments.is_empty() && !config.departments.is_empty() {
             return Err(ContractError::EmptyFieldUpdate);
@@ -417,18 +528,19 @@ impl HospitalRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        Self::emit_audit(&env, &wallet, "departments", old, config);
+        Self::emit_audit(&env, &caller, "departments", old, config);
         Ok(())
     }
 
     pub fn update_locations(
         env: Env,
+        caller: Address,
         wallet: Address,
         locations: Vec<Location>,
     ) -> Result<(), ContractError> {
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
-        Self::assert_config_auth(&env, &wallet, &wallet)?;
-        Self::assert_active_hospital(&env, &wallet)?;
+        validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
+        Self::assert_config_auth(&env, &caller, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
         if locations.is_empty() && !config.locations.is_empty() {
             return Err(ContractError::EmptyFieldUpdate);
@@ -441,18 +553,19 @@ impl HospitalRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        Self::emit_audit(&env, &wallet, "locations", old, config);
+        Self::emit_audit(&env, &caller, "locations", old, config);
         Ok(())
     }
 
     pub fn update_equipment(
         env: Env,
+        caller: Address,
         wallet: Address,
         equipment: Vec<EquipmentResource>,
     ) -> Result<(), ContractError> {
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
-        Self::assert_config_auth(&env, &wallet, &wallet)?;
-        Self::assert_active_hospital(&env, &wallet)?;
+        validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
+        Self::assert_config_auth(&env, &caller, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
         if equipment.is_empty() && !config.equipment.is_empty() {
             return Err(ContractError::EmptyFieldUpdate);
@@ -465,97 +578,126 @@ impl HospitalRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        Self::emit_audit(&env, &wallet, "equipment", old, config);
+        Self::emit_audit(&env, &caller, "equipment", old, config);
         Ok(())
     }
 
     pub fn update_policies(
         env: Env,
+        caller: Address,
         wallet: Address,
         policies: Vec<PolicyProcedure>,
     ) -> Result<(), ContractError> {
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
-        Self::assert_config_auth(&env, &wallet, &wallet)?;
-        Self::assert_active_hospital(&env, &wallet)?;
+        validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
+        Self::assert_config_auth(&env, &caller, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
+        if policies.is_empty() && !config.policies.is_empty() {
+            return Err(ContractError::EmptyFieldUpdate);
+        }
+        if policies.len() > MAX_POLICIES {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
         let old = config.clone();
         config.policies = policies;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        Self::emit_audit(&env, &wallet, "policies", old, config);
+        Self::emit_audit(&env, &caller, "policies", old, config);
         Ok(())
     }
 
     pub fn update_alerts(
         env: Env,
+        caller: Address,
         wallet: Address,
         alerts: Vec<AlertSetting>,
     ) -> Result<(), ContractError> {
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
-        Self::assert_config_auth(&env, &wallet, &wallet)?;
-        Self::assert_active_hospital(&env, &wallet)?;
+        validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
+        Self::assert_config_auth(&env, &caller, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
+        if alerts.is_empty() && !config.alerts.is_empty() {
+            return Err(ContractError::EmptyFieldUpdate);
+        }
+        if alerts.len() > MAX_ALERTS {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
         let old = config.clone();
         config.alerts = alerts;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        Self::emit_audit(&env, &wallet, "alerts", old, config);
+        Self::emit_audit(&env, &caller, "alerts", old, config);
         Ok(())
     }
 
     pub fn update_insurance_providers(
         env: Env,
+        caller: Address,
         wallet: Address,
         insurance_providers: Vec<InsuranceProviderConfig>,
     ) -> Result<(), ContractError> {
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
-        Self::assert_config_auth(&env, &wallet, &wallet)?;
-        Self::assert_active_hospital(&env, &wallet)?;
+        validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
+        Self::assert_config_auth(&env, &caller, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
+        if insurance_providers.is_empty() && !config.insurance_providers.is_empty() {
+            return Err(ContractError::EmptyFieldUpdate);
+        }
+        if insurance_providers.len() > MAX_INSURANCE_PROVIDERS {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
         let old = config.clone();
         config.insurance_providers = insurance_providers;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        Self::emit_audit(&env, &wallet, "insurance", old, config);
+        Self::emit_audit(&env, &caller, "insurance", old, config);
         Ok(())
     }
 
     pub fn update_billing(
         env: Env,
+        caller: Address,
         wallet: Address,
         billing: BillingConfig,
     ) -> Result<(), ContractError> {
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
-        Self::assert_config_auth(&env, &wallet, &wallet)?;
-        Self::assert_active_hospital(&env, &wallet)?;
+        validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
+        Self::assert_config_auth(&env, &caller, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
         let old = config.clone();
         config.billing = billing;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        Self::emit_audit(&env, &wallet, "billing", old, config);
+        Self::emit_audit(&env, &caller, "billing", old, config);
         Ok(())
     }
 
     pub fn update_emergency_protocols(
         env: Env,
+        caller: Address,
         wallet: Address,
         protocols: Vec<EmergencyProtocol>,
     ) -> Result<(), ContractError> {
         validate_nonzero_address(&wallet).map_err(|_| ContractError::InvalidAddress)?;
-        Self::assert_config_auth(&env, &wallet, &wallet)?;
-        Self::assert_active_hospital(&env, &wallet)?;
+        validate_nonzero_address(&caller).map_err(|_| ContractError::InvalidAddress)?;
+        Self::assert_config_auth(&env, &caller, &wallet)?;
         let mut config = Self::get_hospital_config(env.clone(), wallet.clone())?;
+        if protocols.is_empty() && !config.emergency_protocols.is_empty() {
+            return Err(ContractError::EmptyFieldUpdate);
+        }
+        if protocols.len() > MAX_EMERGENCY_PROTOCOLS {
+            return Err(ContractError::ConfigLimitExceeded);
+        }
         let old = config.clone();
         config.emergency_protocols = protocols;
         env.storage()
             .persistent()
             .set(&DataKey::HospitalConfig(wallet.clone()), &config);
-        Self::emit_audit(&env, &wallet, "emergency", old, config);
+        Self::emit_audit(&env, &caller, "emergency", old, config);
         Ok(())
     }
 }

@@ -183,6 +183,15 @@ pub struct ConsentIndexEntry {
     pub purpose_code: String,
 }
 
+/// #676: index entry recording one (grantee, resource) grant a grantor made,
+/// so that deregistering the grantor can revoke every grant it handed out.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GrantorIndexEntry {
+    pub grantee: Address,
+    pub resource_id: String,
+}
+
 /// A structured consent object capturing all HIPAA/GDPR-relevant semantics.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -253,6 +262,8 @@ pub enum DataKey {
     Consent(Address, Address, String),
     // subject -> Vec<(grantee, purpose_code)> for enumeration
     SubjectConsents(Address),
+    // #676: grantor -> Vec<GrantorIndexEntry> of every (grantee, resource) it granted access to
+    GrantedByIndex(Address),
     // RBAC: (address, role) -> RoleAssignment
     RoleAssignment(Address, Role),
     // Rate limiting: (address, ledger_sequence) -> u32 count
@@ -658,6 +669,23 @@ impl AccessControl {
         // #220: record composite grant index
         env.storage().persistent().set(&grant_idx, &true);
 
+        // #676: record grantor-side index so deregistering the grantor can
+        // find and revoke every grant it made.
+        let granted_key = DataKey::GrantedByIndex(grantor.clone());
+        let mut granted_index: Vec<GrantorIndexEntry> = env
+            .storage()
+            .persistent()
+            .get(&granted_key)
+            .unwrap_or(Vec::new(&env));
+        if granted_index.len() >= MAX_ACCESS_LIST_LEN {
+            return Err(ContractError::InputTooLarge);
+        }
+        granted_index.push_back(GrantorIndexEntry {
+            grantee: grantee.clone(),
+            resource_id: resource_id.clone(),
+        });
+        env.storage().persistent().set(&granted_key, &granted_index);
+
         // #224: add grantee to resource's authorized parties (symmetric index)
         let resource_key = DataKey::ResourceAccess(resource_id.clone());
         let mut authorized: Vec<Address> = env
@@ -764,11 +792,30 @@ impl AccessControl {
 
         // --- Step 3: remove composite grant index (#220 + #224 symmetric) ---
         let grant_idx = DataKey::GrantIndex(
-            grantor,
+            grantor.clone(),
             revokee.clone(),
             resource_id.clone(),
         );
         env.storage().persistent().remove(&grant_idx);
+
+        // --- Step 4: remove from grantor-side index (#676) ---
+        let granted_key = DataKey::GrantedByIndex(grantor);
+        let granted_index: Vec<GrantorIndexEntry> = env
+            .storage()
+            .persistent()
+            .get(&granted_key)
+            .unwrap_or(Vec::new(&env));
+        let mut new_granted_index: Vec<GrantorIndexEntry> = Vec::new(&env);
+        for i in 0..granted_index.len() {
+            if let Some(entry) = granted_index.get(i) {
+                if !(entry.grantee == revokee && entry.resource_id == resource_id) {
+                    new_granted_index.push_back(entry);
+                }
+            }
+        }
+        env.storage()
+            .persistent()
+            .set(&granted_key, &new_granted_index);
 
         // #222: assign op_id for the revocation event
         let op_id: u64 = env
@@ -789,6 +836,16 @@ impl AccessControl {
 
     /// Check if an entity has access to a specific resource
     pub fn check_access(env: Env, entity: Address, resource_id: String) -> bool {
+        if let Some(data) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, EntityData>(&DataKey::Entity(entity.clone()))
+        {
+            if !data.active {
+                return false;
+            }
+        }
+
         let access_key = DataKey::AccessList(entity);
         let access_list: Vec<AccessPermission> = env
             .storage()
@@ -859,12 +916,14 @@ impl AccessControl {
 
     /// Deactivate an entity (admin only).
     ///
-    /// In addition to marking the entity inactive, this function emits an
-    /// `acc_rev` event for every active `AccessPermission` held by the entity
-    /// and a `cst_rev` event for every active `ConsentRecord` where the entity
-    /// is the subject.  External audit systems can therefore treat a single
-    /// deactivation as an implicit revocation of all access without needing a
-    /// separate revocation pass.
+    /// In addition to marking the entity inactive, this actually revokes the
+    /// entity's held access permissions (cleaning up the symmetric
+    /// `ResourceAccess`/`GrantIndex` entries the same way `revoke_access`
+    /// does) and marks every `ConsentRecord` where the entity is the subject
+    /// as `Revoked`, emitting an `acc_rev`/`cst_rev` event for each. As a
+    /// second line of defense, `check_access`/`check_consent` also refuse a
+    /// deactivated entity outright, even if a stale permission record were
+    /// ever left behind.
     pub fn deactivate_entity(
         env: Env,
         admin: Address,
@@ -892,10 +951,10 @@ impl AccessControl {
         entity.active = false;
         env.storage().persistent().set(&key, &entity);
 
-        // ── Emit one access-revoked event per active AccessPermission ─────────
-        // We read the entity's access list and emit an `acc_rev` event for each
-        // entry so that audit loggers receive an explicit signal for every
-        // implicit revocation caused by deactivation.
+        // ── Revoke every AccessPermission held by this entity ─────────────────
+        // Emit an `acc_rev` event per active entry, then actually clear the
+        // entity's AccessList plus the symmetric ResourceAccess/GrantIndex
+        // entries (mirrors `revoke_access`), instead of only emitting events.
         let access_key = DataKey::AccessList(wallet.clone());
         let access_list: Vec<AccessPermission> = env
             .storage()
@@ -912,16 +971,47 @@ impl AccessControl {
                     permission.expires_at == 0 || permission.expires_at > now;
                 if is_active {
                     env.events().publish(
-                        (symbol_short!("acc_rev"), wallet.clone(), permission.resource_id),
+                        (
+                            symbol_short!("acc_rev"),
+                            wallet.clone(),
+                            permission.resource_id.clone(),
+                        ),
                         permission.op_id,
                     );
                 }
+
+                // Symmetric ResourceAccess cleanup.
+                let resource_key = DataKey::ResourceAccess(permission.resource_id.clone());
+                let authorized: Vec<Address> = env
+                    .storage()
+                    .persistent()
+                    .get(&resource_key)
+                    .unwrap_or(Vec::new(&env));
+                let mut new_authorized: Vec<Address> = Vec::new(&env);
+                for j in 0..authorized.len() {
+                    if let Some(addr) = authorized.get(j) {
+                        if addr != wallet {
+                            new_authorized.push_back(addr);
+                        }
+                    }
+                }
+                env.storage()
+                    .persistent()
+                    .set(&resource_key, &new_authorized);
+
+                // Composite GrantIndex cleanup.
+                env.storage().persistent().remove(&DataKey::GrantIndex(
+                    permission.granted_by.clone(),
+                    wallet.clone(),
+                    permission.resource_id.clone(),
+                ));
             }
         }
+        env.storage().persistent().remove(&access_key);
 
-        // ── Emit one consent-revoked event per active ConsentRecord ───────────
-        // Walk the subject's consent index and emit a `cst_rev` event for every
-        // consent that is still Active (and not expired).
+        // ── Revoke every ConsentRecord where this entity is the subject ───────
+        // Walk the subject's consent index, mark each still-Active record as
+        // Revoked, and emit a `cst_rev` event for it.
         let idx_key = DataKey::SubjectConsents(wallet.clone());
         let consent_index: Vec<ConsentIndexEntry> = env
             .storage()
@@ -936,7 +1026,7 @@ impl AccessControl {
                     entry.grantee.clone(),
                     entry.purpose_code.clone(),
                 );
-                if let Some(record) = env
+                if let Some(mut record) = env
                     .storage()
                     .persistent()
                     .get::<DataKey, ConsentRecord>(&consent_key)
@@ -945,10 +1035,16 @@ impl AccessControl {
                         && (record.expires_at == 0 || record.expires_at > now);
                     if is_active {
                         env.events().publish(
-                            (symbol_short!("cst_rev"), wallet.clone(), entry.grantee),
-                            (entry.purpose_code, record.op_id),
+                            (
+                                symbol_short!("cst_rev"),
+                                wallet.clone(),
+                                entry.grantee.clone(),
+                            ),
+                            (entry.purpose_code.clone(), record.op_id),
                         );
                     }
+                    record.status = ConsentStatus::Revoked;
+                    env.storage().persistent().set(&consent_key, &record);
                 }
             }
         }
@@ -1115,6 +1211,25 @@ impl AccessControl {
         purpose_code: String,
         required_scope: u32,
     ) -> Result<(), ContractError> {
+        if let Some(data) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, EntityData>(&DataKey::Entity(grantee.clone()))
+        {
+            if !data.active {
+                return Err(ContractError::ConsentDenied);
+            }
+        }
+        if let Some(data) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, EntityData>(&DataKey::Entity(subject.clone()))
+        {
+            if !data.active {
+                return Err(ContractError::ConsentDenied);
+            }
+        }
+
         let key = DataKey::Consent(subject, grantee, purpose_code);
         let record: ConsentRecord = env
             .storage()
@@ -1231,7 +1346,11 @@ impl AccessControl {
     ///
     /// Clears:
     /// - `Entity` record
-    /// - `AccessList` (all permissions granted to the patient)
+    /// - `AccessList` (all permissions granted to the patient), plus the
+    ///   symmetric `ResourceAccess`/`GrantIndex` entries for each one
+    /// - Every access grant the patient made as grantor, removed from the
+    ///   grantee's own `AccessList` along with the symmetric
+    ///   `ResourceAccess`/`GrantIndex` entries
     /// - `SubjectConsents` index + every `Consent` record where the patient is
     ///   the subject
     /// - `Did` registration
@@ -1250,10 +1369,108 @@ impl AccessControl {
             .persistent()
             .remove(&DataKey::Entity(patient.clone()));
 
-        // Remove access list
-        env.storage()
+        // ── Clean up access the patient held as grantee ───────────────────────
+        // Removing AccessList(patient) alone leaves the patient's address in
+        // ResourceAccess and the composite GrantIndex, which both blocks a
+        // future re-grant (spurious AccessAlreadyGranted) and orphans the
+        // patient's address in get_authorized_parties().
+        let access_key = DataKey::AccessList(patient.clone());
+        let access_list: Vec<AccessPermission> = env
+            .storage()
             .persistent()
-            .remove(&DataKey::AccessList(patient.clone()));
+            .get(&access_key)
+            .unwrap_or(Vec::new(&env));
+
+        for i in 0..access_list.len() {
+            if let Some(permission) = access_list.get(i) {
+                let resource_key = DataKey::ResourceAccess(permission.resource_id.clone());
+                let authorized: Vec<Address> = env
+                    .storage()
+                    .persistent()
+                    .get(&resource_key)
+                    .unwrap_or(Vec::new(&env));
+                let mut new_authorized: Vec<Address> = Vec::new(&env);
+                for j in 0..authorized.len() {
+                    if let Some(addr) = authorized.get(j) {
+                        if addr != patient {
+                            new_authorized.push_back(addr);
+                        }
+                    }
+                }
+                env.storage()
+                    .persistent()
+                    .set(&resource_key, &new_authorized);
+
+                env.storage().persistent().remove(&DataKey::GrantIndex(
+                    permission.granted_by.clone(),
+                    patient.clone(),
+                    permission.resource_id.clone(),
+                ));
+            }
+        }
+        env.storage().persistent().remove(&access_key);
+
+        // ── Revoke access the patient granted to others as grantor ────────────
+        // Otherwise a doctor/insurer who received access from the patient
+        // retains it forever.
+        let granted_key = DataKey::GrantedByIndex(patient.clone());
+        let granted_index: Vec<GrantorIndexEntry> = env
+            .storage()
+            .persistent()
+            .get(&granted_key)
+            .unwrap_or(Vec::new(&env));
+
+        for i in 0..granted_index.len() {
+            if let Some(entry) = granted_index.get(i) {
+                // Remove the permission from the grantee's own AccessList.
+                let grantee_key = DataKey::AccessList(entry.grantee.clone());
+                let grantee_list: Vec<AccessPermission> = env
+                    .storage()
+                    .persistent()
+                    .get(&grantee_key)
+                    .unwrap_or(Vec::new(&env));
+                let mut new_grantee_list: Vec<AccessPermission> = Vec::new(&env);
+                for j in 0..grantee_list.len() {
+                    if let Some(permission) = grantee_list.get(j) {
+                        let is_this_grant = permission.resource_id == entry.resource_id
+                            && permission.granted_by == patient;
+                        if !is_this_grant {
+                            new_grantee_list.push_back(permission);
+                        }
+                    }
+                }
+                env.storage()
+                    .persistent()
+                    .set(&grantee_key, &new_grantee_list);
+
+                // Symmetric ResourceAccess cleanup.
+                let resource_key = DataKey::ResourceAccess(entry.resource_id.clone());
+                let authorized: Vec<Address> = env
+                    .storage()
+                    .persistent()
+                    .get(&resource_key)
+                    .unwrap_or(Vec::new(&env));
+                let mut new_authorized: Vec<Address> = Vec::new(&env);
+                for j in 0..authorized.len() {
+                    if let Some(addr) = authorized.get(j) {
+                        if addr != entry.grantee {
+                            new_authorized.push_back(addr);
+                        }
+                    }
+                }
+                env.storage()
+                    .persistent()
+                    .set(&resource_key, &new_authorized);
+
+                // Composite GrantIndex cleanup.
+                env.storage().persistent().remove(&DataKey::GrantIndex(
+                    patient.clone(),
+                    entry.grantee.clone(),
+                    entry.resource_id.clone(),
+                ));
+            }
+        }
+        env.storage().persistent().remove(&granted_key);
 
         // Remove DID
         env.storage()

@@ -54,6 +54,8 @@ pub enum Error {
     RequiresExplicitConsent = 3,
     /// Cross-contract escalation call to emergency-medical-info failed
     EscalationFailed = 4,
+    /// Screening total_score is outside the clinical instrument's valid range
+    InvalidScore = 5,
 }
 
 #[contracttype]
@@ -173,6 +175,9 @@ pub enum DataKey {
     PlanCounter,
     HospitalizationCounter,
     ScreeningCounter,
+    SessionCounter,
+    SymptomCounter,
+    OutcomeCounter,
     Assessment(u64),
     TreatmentPlan(u64),
     Hospitalization(u64),
@@ -180,8 +185,14 @@ pub enum DataKey {
     Screening(u64),
     PrivacyFlag(Address, Symbol),
     Session(u64, u64),
-    Symptom(Address, Symbol, u64),
+    Symptom(u64), // Unique symptom record id (#681)
     Outcomes(u64, u64),
+    /// Per-day session list for deduplication (#681)
+    SessionDay(u64, u64), // (treatment_plan_id, date) -> Vec<session_id>
+    /// Per-day symptom list (#681)
+    SymptomDay(Address, Symbol, u64), // (patient_id, symptom_type, date) -> Vec<symptom_id>
+    /// Per-day outcomes list (#681)
+    OutcomeDay(u64, u64), // (treatment_plan_id, date) -> Vec<outcome_id>
     Consent(Address, Symbol, Address),
     /// Address of the emergency-medical-info contract for crisis escalation
     EmergencyContractAddress,
@@ -371,10 +382,17 @@ impl MentalHealthContract {
     pub fn record_phq9_score(
         env: Env,
         assessment_id: u64,
+        provider_id: Address,
         total_score: u32,
         _item_scores: Vec<u32>,
         _assessment_date: u64,
     ) -> Result<(), Error> {
+        provider_id.require_auth();
+
+        if total_score > 27 {
+            return Err(Error::InvalidScore);
+        }
+
         let mut assessment: MentalHealthAssessment = env
             .storage()
             .persistent()
@@ -392,10 +410,17 @@ impl MentalHealthContract {
     pub fn record_gad7_score(
         env: Env,
         assessment_id: u64,
+        provider_id: Address,
         total_score: u32,
         _item_scores: Vec<u32>,
         _assessment_date: u64,
     ) -> Result<(), Error> {
+        provider_id.require_auth();
+
+        if total_score > 21 {
+            return Err(Error::InvalidScore);
+        }
+
         let mut assessment: MentalHealthAssessment = env
             .storage()
             .persistent()
@@ -571,12 +596,14 @@ impl MentalHealthContract {
         interventions_used: Vec<String>,
         progress_notes_hash: BytesN<32>,
         homework_assigned: Option<String>,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let plan: TreatmentPlan = env
             .storage()
             .persistent()
             .get(&DataKey::TreatmentPlan(treatment_plan_id))
             .ok_or(Error::NotFound)?;
+
+        plan.provider_id.require_auth();
 
         Self::validate_explicit_consent(
             &env,
@@ -584,6 +611,14 @@ impl MentalHealthContract {
             Symbol::new(&env, "therapy_session"),
             &plan.provider_id,
         )?;
+
+        // Use a counter for unique session IDs instead of date-only key (#681)
+        let mut count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SessionCounter)
+            .unwrap_or(0);
+        count += 1;
 
         let session = TherapySession {
             treatment_plan_id,
@@ -597,14 +632,29 @@ impl MentalHealthContract {
 
         env.storage()
             .persistent()
-            .set(&DataKey::Session(treatment_plan_id, session_date), &session);
+            .set(&DataKey::Session(treatment_plan_id, count), &session);
+
+        // Append session ID to per-day list for deduplication / enumeration
+        let mut day_list: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SessionDay(treatment_plan_id, session_date))
+            .unwrap_or(Vec::new(&env));
+        day_list.push_back(count);
+        env.storage()
+            .persistent()
+            .set(&DataKey::SessionDay(treatment_plan_id, session_date), &day_list);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::SessionCounter, &count);
 
         env.events().publish(
             (Symbol::new(&env, "session_recorded"), treatment_plan_id),
             plan.patient_id,
         );
 
-        Ok(())
+        Ok(count)
     }
 
     pub fn track_symptom_severity(
@@ -615,7 +665,7 @@ impl MentalHealthContract {
         severity_score: u32,
         measurement_date: u64,
         measurement_tool: Symbol,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         provider_id.require_auth();
 
         Self::validate_explicit_consent(
@@ -624,6 +674,14 @@ impl MentalHealthContract {
             Symbol::new(&env, "symptom_severity"),
             &provider_id,
         )?;
+
+        // Use a counter for unique symptom record IDs instead of date-only key (#681)
+        let mut count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SymptomCounter)
+            .unwrap_or(0);
+        count += 1;
 
         let symp = SymptomSeverity {
             patient_id: patient_id.clone(),
@@ -634,16 +692,31 @@ impl MentalHealthContract {
         };
 
         env.storage().persistent().set(
-            &DataKey::Symptom(patient_id.clone(), symptom_type, measurement_date),
+            &DataKey::Symptom(count),
             &symp,
         );
+
+        // Append symptom ID to per-day list
+        let mut day_list: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SymptomDay(patient_id.clone(), symptom_type.clone(), measurement_date))
+            .unwrap_or(Vec::new(&env));
+        day_list.push_back(count);
+        env.storage()
+            .persistent()
+            .set(&DataKey::SymptomDay(patient_id.clone(), symptom_type.clone(), measurement_date), &day_list);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::SymptomCounter, &count);
 
         env.events().publish(
             (Symbol::new(&env, "symptom_tracked"), measurement_date),
             patient_id,
         );
 
-        Ok(())
+        Ok(count)
     }
 
     pub fn document_hospitalization(
@@ -655,6 +728,8 @@ impl MentalHealthContract {
         facility_id: Address,
         discharge_date: Option<u64>,
     ) -> Result<u64, Error> {
+        facility_id.require_auth();
+
         // Validate explicit consent for hospitalization records
         Self::validate_explicit_consent(
             &env,
@@ -738,12 +813,14 @@ impl MentalHealthContract {
         measurement_date: u64,
         outcome_measures: Vec<OutcomeMeasure>,
         _functional_improvement: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let plan: TreatmentPlan = env
             .storage()
             .persistent()
             .get(&DataKey::TreatmentPlan(treatment_plan_id))
             .ok_or(Error::NotFound)?;
+
+        plan.provider_id.require_auth();
 
         Self::validate_explicit_consent(
             &env,
@@ -752,17 +829,40 @@ impl MentalHealthContract {
             &plan.provider_id,
         )?;
 
+        // Use a counter for unique outcome record IDs instead of date-only key (#681)
+        let mut count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::OutcomeCounter)
+            .unwrap_or(0);
+        count += 1;
+
         env.storage().persistent().set(
-            &DataKey::Outcomes(treatment_plan_id, measurement_date),
+            &DataKey::Outcomes(treatment_plan_id, count),
             &outcome_measures,
         );
+
+        // Append to per-day list
+        let mut day_list: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::OutcomeDay(treatment_plan_id, measurement_date))
+            .unwrap_or(Vec::new(&env));
+        day_list.push_back(count);
+        env.storage()
+            .persistent()
+            .set(&DataKey::OutcomeDay(treatment_plan_id, measurement_date), &day_list);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::OutcomeCounter, &count);
 
         env.events().publish(
             (Symbol::new(&env, "outcomes_tracked"), treatment_plan_id),
             plan.patient_id,
         );
 
-        Ok(())
+        Ok(count)
     }
 
     pub fn set_enhanced_privacy_flag(

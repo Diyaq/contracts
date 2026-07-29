@@ -51,6 +51,42 @@ fn test_double_initialize_returns_error() {
 }
 
 #[test]
+fn test_front_run_initialize_prevented() {
+    // With mock_all_auths, any address can authenticate, so the legitimate
+    // deployer's initialize succeeds and locks out subsequent attempts.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MultisigGovernance, ());
+    let client = MultisigGovernanceClient::new(&env, &contract_id);
+
+    let deployer = Address::generate(&env);
+
+    // Legitimate deployer initializes with their own signer set
+    let mut real_signers = Vec::new(&env);
+    real_signers.push_back(deployer.clone());
+    client.initialize(&real_signers, &1u32, &3600u64, &1u32);
+
+    // An attacker (with different signers) tries to re-initialize — should fail
+    let attacker = Address::generate(&env);
+    let mut attacker_signers = Vec::new(&env);
+    attacker_signers.push_back(attacker.clone());
+    let err = client
+        .try_initialize(&attacker_signers, &1u32, &3600u64, &1u32)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::AlreadyInitialized);
+
+    // Verify that the deployer's signer set is intact, not the attacker's
+    let stored_signers: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Signers)
+        .unwrap();
+    assert_eq!(stored_signers.len(), 1);
+    assert_eq!(stored_signers.get(0).unwrap(), deployer);
+}
+
+#[test]
 fn test_invalid_threshold_returns_error() {
     let env = Env::default();
     env.mock_all_auths();
@@ -552,6 +588,70 @@ fn test_signer_snapshot_stored_at_proposal_time() {
     let proposal = client.get_proposal(&symbol_short!("export"));
     // Snapshot must match the 3 initial signers.
     assert_eq!(proposal.eligible_signers.len(), 3);
+}
+
+// ── #636 regression: re-propose after expiry ─────────────────────────────────
+
+/// Propose an action, let the TTL expire, then re-propose the *same* action_id
+/// without calling cleanup_expired_proposals first.  The re-proposal must
+/// succeed (not return ProposalExists).
+#[test]
+fn test_repropose_same_action_id_after_ttl_expiry() {
+    let (env, signers, client) = setup(3, 2);
+    let s0 = signers.get(0).unwrap();
+
+    // First proposal.
+    client.propose_multisig_action(&s0, &symbol_short!("export"), &payload(&env));
+
+    // Advance time past the TTL (3600 s) so the proposal is expired.
+    env.ledger().with_mut(|li| {
+        li.timestamp += 3601;
+    });
+
+    // Re-propose the same action_id without any cleanup call — must succeed.
+    client.propose_multisig_action(&s0, &symbol_short!("export"), &payload(&env));
+
+    // The new proposal is fresh and Pending.
+    let proposal = client.get_proposal(&symbol_short!("export"));
+    assert_eq!(proposal.status, ProposalStatus::Pending);
+    // proposed_at must match the current (advanced) ledger timestamp.
+    assert_eq!(proposal.proposed_at, env.ledger().timestamp());
+}
+
+/// A proposal that is still within its TTL window must still block re-proposal.
+#[test]
+fn test_repropose_while_active_still_blocked() {
+    let (env, signers, client) = setup(3, 2);
+    let s0 = signers.get(0).unwrap();
+
+    client.propose_multisig_action(&s0, &symbol_short!("export"), &payload(&env));
+
+    // TTL has NOT elapsed — re-proposal must still fail.
+    let err = client
+        .try_propose_multisig_action(&s0, &symbol_short!("export"), &payload(&env))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::ProposalExists);
+}
+
+/// A finalized (Executed) proposal must not block re-proposal of the same
+/// action_id, even within the original TTL window.
+#[test]
+fn test_repropose_after_execution_succeeds() {
+    // threshold=2, quorum_min=2 → s0 propose + s1 approve = Executed.
+    let (env, signers, client) = setup_with_quorum(3, 2, 2);
+    let s0 = signers.get(0).unwrap();
+    let s1 = signers.get(1).unwrap();
+
+    client.propose_multisig_action(&s0, &symbol_short!("export"), &payload(&env));
+    client.approve_multisig_action(&s1, &symbol_short!("export"));
+    let p = client.get_proposal(&symbol_short!("export"));
+    assert_eq!(p.status, ProposalStatus::Executed);
+
+    // Re-proposing an Executed action_id must succeed.
+    client.propose_multisig_action(&s0, &symbol_short!("export"), &payload(&env));
+    let p2 = client.get_proposal(&symbol_short!("export"));
+    assert_eq!(p2.status, ProposalStatus::Pending);
 }
 
 #[test]

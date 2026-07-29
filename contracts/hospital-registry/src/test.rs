@@ -250,7 +250,8 @@ fn test_hospital_config_flow() {
         emergency_protocols: protocols.clone(),
     };
 
-    client.set_hospital_config(&hospital_wallet, &config);
+    // Hospital acts as its own caller (caller == wallet).
+    client.set_hospital_config(&hospital_wallet, &hospital_wallet, &config);
 
     let stored = client.get_hospital_config(&hospital_wallet);
     assert_eq!(stored.departments, departments);
@@ -269,7 +270,7 @@ fn test_hospital_config_flow() {
         contact: String::from_str(&env, "cardio@rmc.org"),
     });
 
-    client.update_departments(&hospital_wallet, &updated_departments);
+    client.update_departments(&hospital_wallet, &hospital_wallet, &updated_departments);
     let stored_after = client.get_hospital_config(&hospital_wallet);
     assert_eq!(stored_after.departments, updated_departments);
 }
@@ -286,7 +287,7 @@ fn test_update_departments_exceeds_limit() {
     register_hospital_with_anchor(&env, &client, &hospital_wallet);
 
     // Initialise an empty config so get_hospital_config succeeds inside update_departments
-    client.set_hospital_config(&hospital_wallet, &HospitalConfig {
+    client.set_hospital_config(&hospital_wallet, &hospital_wallet, &HospitalConfig {
         departments: Vec::new(&env),
         locations: Vec::new(&env),
         equipment: Vec::new(&env),
@@ -311,7 +312,7 @@ fn test_update_departments_exceeds_limit() {
         let _ = i;
     }
 
-    let result = client.try_update_departments(&hospital_wallet, &departments);
+    let result = client.try_update_departments(&hospital_wallet, &hospital_wallet, &departments);
     assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
 }
 
@@ -326,7 +327,7 @@ fn test_update_locations_exceeds_limit() {
 
     register_hospital_with_anchor(&env, &client, &hospital_wallet);
 
-    client.set_hospital_config(&hospital_wallet, &HospitalConfig {
+    client.set_hospital_config(&hospital_wallet, &hospital_wallet, &HospitalConfig {
         departments: Vec::new(&env),
         locations: Vec::new(&env),
         equipment: Vec::new(&env),
@@ -351,7 +352,7 @@ fn test_update_locations_exceeds_limit() {
         let _ = i;
     }
 
-    let result = client.try_update_locations(&hospital_wallet, &locations);
+    let result = client.try_update_locations(&hospital_wallet, &hospital_wallet, &locations);
     assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
 }
 
@@ -366,7 +367,7 @@ fn test_update_equipment_exceeds_limit() {
 
     register_hospital_with_anchor(&env, &client, &hospital_wallet);
 
-    client.set_hospital_config(&hospital_wallet, &HospitalConfig {
+    client.set_hospital_config(&hospital_wallet, &hospital_wallet, &HospitalConfig {
         departments: Vec::new(&env),
         locations: Vec::new(&env),
         equipment: Vec::new(&env),
@@ -392,7 +393,7 @@ fn test_update_equipment_exceeds_limit() {
         let _ = i;
     }
 
-    let result = client.try_update_equipment(&hospital_wallet, &equipment);
+    let result = client.try_update_equipment(&hospital_wallet, &hospital_wallet, &equipment);
     assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
 }
 
@@ -417,7 +418,7 @@ fn test_set_hospital_config_exceeds_limits() {
         let _ = i;
     }
 
-    let result = client.try_set_hospital_config(&hospital_wallet, &HospitalConfig {
+    let result = client.try_set_hospital_config(&hospital_wallet, &hospital_wallet, &HospitalConfig {
         departments: Vec::new(&env),
         locations,
         equipment: Vec::new(&env),
@@ -433,3 +434,45 @@ fn test_set_hospital_config_exceeds_limits() {
     });
     assert_eq!(result, Err(Ok(ContractError::ConfigLimitExceeded)));
 }
+
+// ── Credential revocation (#682) ──────────────────────────────────────────────
+
+#[test]
+fn test_revoke_hospital_credential_prevents_mutations() {
+    let env = Env::default();
+    let contract_id = env.register(HospitalRegistry, ());
+    let client = HospitalRegistryClient::new(&env, &contract_id);
+
+    let hospital_wallet = Address::generate(&env);
+    let admin = Address::generate(&env);
+    env.mock_all_auths();
+
+    // Set the admin
+    client.set_admin(&admin, &admin);
+
+    register_hospital_with_anchor(&env, &client, &hospital_wallet);
+
+    // Hospital is active before revocation
+    assert!(client.is_hospital_active(&hospital_wallet));
+
+    // Revoke the credential
+    client.revoke_hospital_credential(&admin, &hospital_wallet);
+
+    // Hospital should no longer be active
+    assert!(!client.is_hospital_active(&hospital_wallet));
+
+    // State-mutating calls should now fail with CredentialRevoked
+    let result = client.try_update_hospital(
+        &hospital_wallet,
+        &String::from_str(&env, "Should fail"),
+    );
+    assert_eq!(result, Err(Ok(ContractError::CredentialRevoked)));
+
+    // Even the hospital's own config updates should fail
+    let result = client.try_update_departments(
+        &hospital_wallet,
+        &Vec::new(&env),
+    );
+    assert_eq!(result, Err(Ok(ContractError::CredentialRevoked)));
+}
+

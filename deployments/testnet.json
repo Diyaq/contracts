@@ -1,0 +1,5 @@
+{
+  "_network": "testnet",
+  "_status": "not-yet-deployed",
+  "_note": "No contracts have been deployed to testnet yet. Run ./scripts/deploy_all.sh --network testnet to populate this manifest with live contract IDs."
+}

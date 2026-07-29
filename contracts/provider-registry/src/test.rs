@@ -162,7 +162,7 @@ fn test_add_record_by_whitelisted_provider() {
         &String::from_str(&env, "Patient data"),
     );
     assert_eq!(
-        client.get_record(&String::from_str(&env, "REC001")),
+        client.get_record(&provider, &provider, &String::from_str(&env, "REC001")),
         String::from_str(&env, "Patient data")
     );
 }
@@ -203,9 +203,9 @@ fn test_add_record_after_revocation_returns_error() {
 
 #[test]
 fn test_get_missing_record_returns_error() {
-    let (env, _, client) = setup();
+    let (env, admin, client) = setup();
     let err = client
-        .try_get_record(&String::from_str(&env, "MISSING"))
+        .try_get_record(&admin, &admin, &String::from_str(&env, "MISSING"))
         .unwrap_err()
         .unwrap();
     assert_eq!(err, Error::RecordNotFound);
