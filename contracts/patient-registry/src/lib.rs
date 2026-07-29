@@ -81,17 +81,6 @@ pub struct PatientStatusChanged {
 }
 
 /// --------------------
-/// Retention Class
-/// --------------------
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RetentionClass {
-    Clinical,
-    Financial,
-    Administrative,
-}
-
-/// --------------------
 /// Patient Structures
 /// --------------------
 #[contracttype]

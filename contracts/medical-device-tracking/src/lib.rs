@@ -395,16 +395,33 @@ impl MedicalDeviceRegistry {
     }
 
     /// Return the IDs of all patients with an active implant from the recalled devices.
+    ///
+    /// Restricted to the manufacturer/regulator that issued the recall (or the
+    /// configured regulator, which has oversight of all recalls) -- this list
+    /// discloses which patients carry a specific recalled device, so it must
+    /// not be readable by an arbitrary caller.
     pub fn notify_affected_patients(
         env: Env,
+        caller: Address,
         recall_id: u64,
         _notification_date: u64,
     ) -> Result<Vec<Address>, Error> {
+        caller.require_auth();
+
         let recall: RecallInfo = env
             .storage()
             .persistent()
             .get(&DataKey::RecallInfo(recall_id))
             .ok_or(Error::RecordNotFound)?;
+
+        let configured_regulator: Option<Address> =
+            env.storage().instance().get(&DataKey::Regulator);
+        let is_regulator = configured_regulator
+            .map(|regulator| regulator == caller)
+            .unwrap_or(false);
+        if caller != recall.issuer && !is_regulator {
+            return Err(Error::NotAuthorized);
+        }
 
         let mut affected_patients: Vec<Address> = Vec::new(&env);
 

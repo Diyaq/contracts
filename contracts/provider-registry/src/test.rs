@@ -1,8 +1,13 @@
 #![cfg(test)]
 
 use super::*;
-use shared::test_utils::dummy_hash;
-use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String};
+use soroban_sdk::{
+    testutils::Address as _, Address, BytesN, Env, String,
+};
+
+fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[byte; 32])
+}
 
 
 fn register_provider_with_anchor(

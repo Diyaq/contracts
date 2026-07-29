@@ -7,6 +7,9 @@
 /// Closes #401.
 #[cfg(test)]
 mod cid_fuzz_tests {
+    extern crate std;
+    use std::{vec, vec::Vec};
+
     use shared::privacy::{validate_envelope_uri_bytes, validate_key_version_id_bytes};
 
     // ── helpers ──────────────────────────────────────────────────────────────

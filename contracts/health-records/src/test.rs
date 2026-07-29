@@ -1,3 +1,5 @@
+use soroban_sdk::{Address, Env};
+
 #[soroban_sdk::contract]
 pub struct MockProviderRegistry;
 
@@ -11,6 +13,7 @@ impl MockProviderRegistry {
         let key = soroban_sdk::Symbol::new(&env, "is_prov");
         env.storage().instance().set(&key, &val);
     }
+
 }
 
 #[cfg(test)]
@@ -289,16 +292,190 @@ mod tests {
         client.grant_consent(&patient, &provider, &full_scope());
         
         let mut records = soroban_sdk::Vec::new(&env);
-        records.push_back(crate::BatchRecordEntry {
+        records.push_back(crate::RecordInput {
             patient: patient.clone(),
             encrypted_ref: encrypted_ref(&env, 1),
             record_category: RecordCategory::Imaging,
-            description: Some(String::from_str(&env, "XRAY")),
+            record_description: Some(String::from_str(&env, "XRAY")),
             policy: policy(&env),
         });
         
         let result = client.try_create_records_batch(&provider, &records);
         assert_eq!(result, Err(Ok(Error::ProviderNotRegistered)));
+    }
+
+    mod cross_contract_workflow_tests {
+        use super::*;
+        use crate::{ConsentScope, RecordCategory};
+        use patient_registry::{MedicalRegistry, MedicalRegistryClient};
+        use provider_registry::{ProviderRegistry, ProviderRegistryClient};
+        use soroban_sdk::{
+            testutils::Address as _, vec, Address, BytesN, Env, IntoVal, String, Symbol, Vec,
+        };
+
+        #[test]
+        fn test_provider_patient_healthrecord_record_creation_flow() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let provider_registry_id = env.register(ProviderRegistry, ());
+            let patient_registry_id = env.register(MedicalRegistry, ());
+            let hr_contract_id = env.register(HealthRecords, ());
+
+            let provider_client = ProviderRegistryClient::new(&env, &provider_registry_id);
+            let patient_client = MedicalRegistryClient::new(&env, &patient_registry_id);
+            let hr_client = HealthRecordsClient::new(&env, &hr_contract_id);
+            hr_client.initialize(&provider_registry_id);
+
+            let admin = Address::generate(&env);
+            let provider = Address::generate(&env);
+            let patient = Address::generate(&env);
+
+            provider_client.initialize(&admin);
+            provider_client.register_provider(
+                &admin,
+                &provider,
+                &String::from_str(&env, "Provider One"),
+                &String::from_str(&env, "General Practice"),
+                &String::from_str(&env, "LIC-100"),
+                &BytesN::from_array(&env, &[1u8; 32]),
+                &Address::generate(&env),
+                &BytesN::from_array(&env, &[2u8; 32]),
+                &u64::MAX,
+                &BytesN::from_array(&env, &[3u8; 32]),
+            );
+
+            patient_client.register_patient(
+                &patient,
+                &String::from_str(&env, "Alice Patient"),
+                &631152000u64,
+                &encrypted_ref(&env, 5),
+                &policy(&env),
+            );
+
+            let provider_is_registered: bool = env.invoke_contract(
+                &provider_registry_id,
+                &Symbol::new(&env, "is_provider"),
+                vec![&env, provider.clone().into_val(&env)],
+            );
+            assert!(provider_is_registered);
+
+            let patient_is_registered: bool = env.invoke_contract(
+                &patient_registry_id,
+                &Symbol::new(&env, "is_patient_registered"),
+                vec![&env, patient.clone().into_val(&env)],
+            );
+            assert!(patient_is_registered);
+
+            hr_client.grant_consent(&patient, &provider, &ConsentScope {
+                can_read: true,
+                can_write: true,
+                can_share: true,
+                expires_at: 0,
+            });
+
+            let record_id = hr_client
+                .create_record(
+                    &patient,
+                    &provider,
+                    &encrypted_ref(&env, 9),
+                    &RecordCategory::Consultation,
+                    &Some(String::from_str(&env, "DIAGNOSIS")),
+                    &policy(&env),
+                );
+            let record = hr_client.get_record(&patient, &record_id);
+
+            assert_eq!(record.patient, patient);
+            assert_eq!(record.provider, provider);
+            assert_eq!(record.record_description, Some(String::from_str(&env, "DIAGNOSIS")));
+        }
+
+        #[test]
+        fn test_cross_contract_error_propagation_for_missing_consent() {
+            let env = Env::default();
+            env.mock_all_auths();
+
+            let provider_registry_id = env.register(ProviderRegistry, ());
+            let patient_registry_id = env.register(MedicalRegistry, ());
+            let hr_contract_id = env.register(HealthRecords, ());
+
+            let provider_client = ProviderRegistryClient::new(&env, &provider_registry_id);
+            let patient_client = MedicalRegistryClient::new(&env, &patient_registry_id);
+            let hr_client = HealthRecordsClient::new(&env, &hr_contract_id);
+            hr_client.initialize(&provider_registry_id);
+
+            let provider = Address::generate(&env);
+            let patient = Address::generate(&env);
+            let admin = Address::generate(&env);
+
+            provider_client.initialize(&admin);
+            provider_client.register_provider(
+                &admin,
+                &provider,
+                &String::from_str(&env, "Provider Two"),
+                &String::from_str(&env, "Specialty"),
+                &String::from_str(&env, "LIC-200"),
+                &BytesN::from_array(&env, &[4u8; 32]),
+                &Address::generate(&env),
+                &BytesN::from_array(&env, &[5u8; 32]),
+                &u64::MAX,
+                &BytesN::from_array(&env, &[6u8; 32]),
+            );
+
+            patient_client.register_patient(
+                &patient,
+                &String::from_str(&env, "Bob Patient"),
+                &631152000u64,
+                &encrypted_ref(&env, 5),
+                &policy(&env),
+            );
+
+            let result: Result<Result<u64, _>, Result<Error, _>> = env.try_invoke_contract(
+                &hr_contract_id,
+                &Symbol::new(&env, "create_record"),
+                vec![
+                    &env,
+                    patient.clone().into_val(&env),
+                    provider.clone().into_val(&env),
+                    encrypted_ref(&env, 10).into_val(&env),
+                    RecordCategory::Lab.into_val(&env),
+                    Some(String::from_str(&env, "LAB")).into_val(&env),
+                    policy(&env).into_val(&env),
+                ],
+            );
+
+            assert_eq!(result, Err(Ok(Error::ConsentNotGranted)));
+        }
+
+        #[test]
+        fn test_consent_grant_access_revoke_denies_provider() {
+            let env = Env::default();
+            env.mock_all_auths();
+            let (client, patient, provider) = setup(&env);
+
+            client.grant_consent(&patient, &provider, &ConsentScope {
+                can_read: true,
+                can_write: true,
+                can_share: true,
+                expires_at: 0,
+            });
+            let record_id = client
+                .create_record(
+                    &patient,
+                    &provider,
+                    &encrypted_ref(&env, 11),
+                    &RecordCategory::Imaging,
+                    &Some(String::from_str(&env, "XRAY")),
+                    &policy(&env),
+                );
+
+            let record = client.get_record(&provider, &record_id);
+            assert_eq!(record.record_id, record_id);
+
+            client.revoke_consent(&patient, &provider);
+            let result = client.try_get_record(&provider, &record_id);
+            assert_eq!(result, Err(Ok(Error::Unauthorized)));
+        }
     }
 }
 
@@ -450,175 +627,6 @@ mod cross_contract_correlation_tests {
     }
 }
 
-    mod cross_contract_workflow_tests {
-        use super::*;
-        use crate::{ConsentScope, RecordCategory};
-        use patient_registry::{MedicalRegistry, MedicalRegistryClient};
-        use provider_registry::{ProviderRegistry, ProviderRegistryClient};
-        use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol, Vec};
-
-        #[test]
-        fn test_provider_patient_healthrecord_record_creation_flow() {
-            let env = Env::default();
-            env.mock_all_auths();
-
-            let provider_registry_id = env.register(ProviderRegistry, ());
-            let patient_registry_id = env.register(MedicalRegistry, ());
-            let hr_contract_id = env.register(HealthRecords, ());
-
-            let provider_client = ProviderRegistryClient::new(&env, &provider_registry_id);
-            let patient_client = MedicalRegistryClient::new(&env, &patient_registry_id);
-            let hr_client = HealthRecordsClient::new(&env, &hr_contract_id);
-
-            let admin = Address::generate(&env);
-            let provider = Address::generate(&env);
-            let patient = Address::generate(&env);
-
-            provider_client.initialize(&admin);
-            provider_client.register_provider(
-                &admin,
-                &provider,
-                &String::from_str(&env, "Provider One"),
-                &String::from_str(&env, "General Practice"),
-                &String::from_str(&env, "LIC-100"),
-                &BytesN::from_array(&env, &[1u8; 32]),
-                &Address::generate(&env),
-                &BytesN::from_array(&env, &[2u8; 32]),
-                &u64::MAX,
-                &BytesN::from_array(&env, &[3u8; 32]),
-            );
-
-            patient_client.register_patient(
-                &patient,
-                &String::from_str(&env, "Alice Patient"),
-                &631152000u64,
-                &encrypted_ref(&env, 5),
-                &policy(&env),
-            );
-
-            let provider_is_registered: bool = env.invoke_contract(
-                &provider_registry_id,
-                &Symbol::new(&env, "is_provider"),
-                vec![&env, provider.clone().into_val(&env)],
-            );
-            assert!(provider_is_registered);
-
-            let patient_is_registered: bool = env.invoke_contract(
-                &patient_registry_id,
-                &Symbol::new(&env, "is_patient_registered"),
-                vec![&env, patient.clone().into_val(&env)],
-            );
-            assert!(patient_is_registered);
-
-            hr_client.grant_consent(&patient, &provider, &ConsentScope {
-                can_read: true,
-                can_write: true,
-                can_share: true,
-                expires_at: 0,
-            });
-
-            let record_id = hr_client
-                .create_record(
-                    &patient,
-                    &provider,
-                    &encrypted_ref(&env, 9),
-                    &RecordCategory::Consultation,
-                    &Some(String::from_str(&env, "DIAGNOSIS")),
-                    &policy(&env),
-                )
-                .unwrap();
-            let record = hr_client.get_record(&patient, &record_id);
-
-            assert_eq!(record.patient, patient);
-            assert_eq!(record.provider, provider);
-            assert_eq!(record.record_description, Some(String::from_str(&env, "DIAGNOSIS")));
-        }
-
-        #[test]
-        fn test_cross_contract_error_propagation_for_missing_consent() {
-            let env = Env::default();
-            env.mock_all_auths();
-
-            let provider_registry_id = env.register(ProviderRegistry, ());
-            let patient_registry_id = env.register(MedicalRegistry, ());
-            let hr_contract_id = env.register(HealthRecords, ());
-
-            let provider_client = ProviderRegistryClient::new(&env, &provider_registry_id);
-            let patient_client = MedicalRegistryClient::new(&env, &patient_registry_id);
-
-            let provider = Address::generate(&env);
-            let patient = Address::generate(&env);
-
-            provider_client.initialize(&Address::generate(&env));
-            provider_client.register_provider(
-                &Address::generate(&env),
-                &provider,
-                &String::from_str(&env, "Provider Two"),
-                &String::from_str(&env, "Specialty"),
-                &String::from_str(&env, "LIC-200"),
-                &BytesN::from_array(&env, &[4u8; 32]),
-                &Address::generate(&env),
-                &BytesN::from_array(&env, &[5u8; 32]),
-                &u64::MAX,
-                &BytesN::from_array(&env, &[6u8; 32]),
-            );
-
-            patient_client.register_patient(
-                &patient,
-                &String::from_str(&env, "Bob Patient"),
-                &631152000u64,
-                &encrypted_ref(&env, 5),
-                &policy(&env),
-            );
-
-            let result: Result<u64, Error> = env.invoke_contract(
-                &hr_contract_id,
-                &Symbol::new(&env, "create_record"),
-                vec![
-                    &env,
-                    patient.clone().into_val(&env),
-                    provider.clone().into_val(&env),
-                    encrypted_ref(&env, 10).into_val(&env),
-                    RecordCategory::Lab.into_val(&env),
-                    Some(String::from_str(&env, "LAB")).into_val(&env),
-                    policy(&env).into_val(&env),
-                ],
-            );
-
-            assert_eq!(result, Err(Error::ConsentNotGranted));
-        }
-
-        #[test]
-        fn test_consent_grant_access_revoke_denies_provider() {
-            let env = Env::default();
-            env.mock_all_auths();
-            let (client, patient, provider) = setup(&env);
-
-            client.grant_consent(&patient, &provider, &ConsentScope {
-                can_read: true,
-                can_write: true,
-                can_share: true,
-                expires_at: 0,
-            });
-            let record_id = client
-                .create_record(
-                    &patient,
-                    &provider,
-                    &encrypted_ref(&env, 11),
-                    &RecordCategory::Imaging,
-                    &Some(String::from_str(&env, "XRAY")),
-                    &policy(&env),
-                )
-                .unwrap();
-
-            let record = client.get_record(&provider, &record_id);
-            assert_eq!(record.record_id, record_id);
-
-            client.revoke_consent(&patient, &provider);
-            let result = client.try_get_record(&provider, &record_id);
-            assert_eq!(result, Err(Ok(Error::Unauthorized)));
-        }
-    }
 
 /// Tests for issue #472: bulk record creation via `create_records_batch`.
 #[cfg(test)]
@@ -1209,5 +1217,112 @@ mod consent_scope_tests {
         // Patient can still read their own record regardless.
         let record = client.get_record(&patient, &record_id);
         assert_eq!(record.record_id, record_id);
+    }
+
+    #[test]
+    fn test_read_only_scope_blocks_update_record() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, patient, provider) = setup(&env);
+
+        // Create the record with full access, then downgrade to read-only.
+        client.grant_consent(&patient, &provider, &full_scope());
+        let reference = encrypted_ref(&env, 1);
+        let rtype = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "LAB_RESULT"));
+        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
+
+        client.grant_consent(&patient, &provider, &read_only_scope());
+
+        // A read-only provider must not be able to overwrite record content.
+        let new_reference = encrypted_ref(&env, 2);
+        let result = client.try_update_record(
+            &provider,
+            &record_id,
+            &new_reference,
+            &rtype,
+            &Some(String::from_str(&env, "TAMPERED")),
+            &policy(&env),
+        );
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+        // The record must be unchanged.
+        let record = client.get_record(&patient, &record_id);
+        assert_eq!(record.version, 1);
+        assert_eq!(record.record_description, rdesc);
+    }
+
+    #[test]
+    fn test_write_only_scope_allows_update_record() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, patient, provider) = setup(&env);
+
+        client.grant_consent(&patient, &provider, &write_only_scope());
+
+        let reference = encrypted_ref(&env, 1);
+        let rtype = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "LAB_RESULT"));
+        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
+
+        let new_reference = encrypted_ref(&env, 2);
+        let new_version = client.update_record(
+            &provider,
+            &record_id,
+            &new_reference,
+            &rtype,
+            &Some(String::from_str(&env, "AMENDED")),
+            &policy(&env),
+        );
+        assert_eq!(new_version, 2);
+    }
+
+    #[test]
+    fn test_write_only_scope_blocks_get_record_version() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, patient, provider) = setup(&env);
+
+        client.grant_consent(&patient, &provider, &write_only_scope());
+
+        let reference = encrypted_ref(&env, 1);
+        let rtype = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "LAB_RESULT"));
+        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
+
+        // A write-only provider must not be able to read historical versions.
+        let result = client.try_get_record_version(&provider, &record_id, &1u32);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn test_read_only_scope_allows_get_record_version() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, patient, provider) = setup(&env);
+
+        // Create and amend the record with full access.
+        client.grant_consent(&patient, &provider, &full_scope());
+        let reference = encrypted_ref(&env, 1);
+        let rtype = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "LAB_RESULT"));
+        let record_id = client.create_record(&patient, &provider, &reference, &rtype, &rdesc, &policy(&env));
+
+        let new_reference = encrypted_ref(&env, 2);
+        client.update_record(
+            &provider,
+            &record_id,
+            &new_reference,
+            &rtype,
+            &Some(String::from_str(&env, "AMENDED")),
+            &policy(&env),
+        );
+
+        // Downgrade to read-only.
+        client.grant_consent(&patient, &provider, &read_only_scope());
+
+        // A read-only provider can still fetch the historical version.
+        let version1 = client.get_record_version(&provider, &record_id, &1u32);
+        assert_eq!(version1.record_description, rdesc);
     }
 }
