@@ -23,6 +23,10 @@ pub enum Error {
     ProviderNotLicensedInPatientState = 14,
     /// Controlled substance requires in-person visit per jurisdiction policy
     ControlledSubstanceRequiresInPerson = 15,
+    /// Provider has exceeded the allowed session-creation rate limit
+    RateLimitExceeded = 16,
+    /// Provider is not registered in the provider registry
+    ProviderNotRegistered = 17,
 }
 
 /// On-chain record of a provider's license in a given jurisdiction (state/region).
@@ -138,4 +142,10 @@ pub enum DataKey {
     JurisdictionPolicy(String),
     /// jurisdiction -> bool (true = requires in-person for controlled substances)
     ControlledSubstancePolicy(String),
+    /// Global rate-limit configuration for session creation
+    RateLimitConfig,
+    /// provider_id -> current rate-limit window state
+    ProviderSessionWindow(Address),
+    /// Address of the external provider registry contract
+    ProviderRegistryAddress,
 }

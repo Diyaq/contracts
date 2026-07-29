@@ -130,6 +130,7 @@ fn test_labor_delivery_and_newborn_flow() {
     );
 
     let newborn1 = client.record_newborn(
+        &provider,
         &delivery_id,
         &1_725_000_100,
         &symbol_short!("female"),
@@ -142,6 +143,7 @@ fn test_labor_delivery_and_newborn_flow() {
     );
 
     let newborn2 = client.record_newborn(
+        &provider,
         &delivery_id,
         &1_725_000_110,
         &symbol_short!("male"),
@@ -168,8 +170,10 @@ fn test_labor_delivery_and_newborn_flow() {
 #[test]
 fn test_newborn_screening_and_missing_newborn() {
     let (env, client) = setup();
+    let provider = Address::generate(&env);
     let missing = Address::generate(&env);
     let res = client.try_record_newborn_screening(
+        &provider,
         &missing,
         &Symbol::new(&env, "metabolic"),
         &1_725_010_000,
@@ -202,6 +206,7 @@ fn test_newborn_screening_success() {
         &provider,
     );
     let newborn = client.record_newborn(
+        &provider,
         &delivery_id,
         &1_725_000_120,
         &symbol_short!("female"),
@@ -214,6 +219,7 @@ fn test_newborn_screening_success() {
     );
 
     client.record_newborn_screening(
+        &provider,
         &newborn,
         &Symbol::new(&env, "hearing"),
         &1_725_010_500,
@@ -226,8 +232,10 @@ fn test_newborn_screening_success() {
 fn test_pediatric_growth_milestones_well_child() {
     let (env, client) = setup();
     let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
 
     client.track_pediatric_growth(
+        &provider,
         &patient,
         &1_730_000_000,
         &12,
@@ -238,6 +246,7 @@ fn test_pediatric_growth_milestones_well_child() {
     );
 
     client.record_developmental_milestone(
+        &provider,
         &patient,
         &1_730_000_100,
         &12,
@@ -247,6 +256,7 @@ fn test_pediatric_growth_milestones_well_child() {
     );
 
     client.track_well_child_visit(
+        &provider,
         &patient,
         &1_730_000_200,
         &12,
@@ -292,6 +302,7 @@ fn test_invalid_inputs_failures() {
         &provider,
     );
     let bad_newborn = client.try_record_newborn(
+        &provider,
         &delivery_id,
         &1_725_000_100,
         &symbol_short!("male"),
@@ -305,8 +316,16 @@ fn test_invalid_inputs_failures() {
     assert!(bad_newborn.is_err());
 
     let patient = Address::generate(&env);
-    let bad_growth =
-        client.try_track_pediatric_growth(&patient, &1_730_000_000, &12, &0, &7550, &None, &1720);
+    let bad_growth = client.try_track_pediatric_growth(
+        &provider,
+        &patient,
+        &1_730_000_000,
+        &12,
+        &0,
+        &7550,
+        &None,
+        &1720,
+    );
     assert!(bad_growth.is_err());
 }
 
@@ -342,6 +361,108 @@ fn test_calculate_growth_percentiles() {
         },
     );
     assert!(bad.is_err());
+}
+
+#[test]
+#[should_panic]
+fn test_prenatal_visit_requires_provider_auth() {
+    let env = Env::default();
+    let contract_id = env.register(MaternalChildHealthContract, ());
+    let client = MaternalChildHealthContractClient::new(&env, &contract_id);
+    env.mock_all_auths();
+    let (_patient, _provider, pregnancy_id) = seed_pregnancy(&env, &client);
+
+    env.set_auths(&[]);
+    client.record_prenatal_visit(
+        &pregnancy_id,
+        &1_701_000_000,
+        &12,
+        &6_850,
+        &String::from_str(&env, "118/74"),
+        &Some(14),
+        &Some(145),
+        &BytesN::from_array(&env, &[11u8; 32]),
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_document_labor_admission_requires_provider_auth() {
+    let env = Env::default();
+    let contract_id = env.register(MaternalChildHealthContract, ());
+    let client = MaternalChildHealthContractClient::new(&env, &contract_id);
+    env.mock_all_auths();
+    let (_patient, _provider, pregnancy_id) = seed_pregnancy(&env, &client);
+
+    env.set_auths(&[]);
+    client.document_labor_admission(
+        &pregnancy_id,
+        &1_724_900_000,
+        &true,
+        &Symbol::new(&env, "intact"),
+        &5,
+        &80,
+    );
+}
+
+#[test]
+fn test_record_newborn_rejects_mismatched_provider() {
+    let (env, client) = setup();
+    let (_patient, provider, pregnancy_id) = seed_pregnancy(&env, &client);
+    let impostor = Address::generate(&env);
+
+    let labor_id = client.document_labor_admission(
+        &pregnancy_id,
+        &1_724_900_000,
+        &true,
+        &Symbol::new(&env, "intact"),
+        &5,
+        &80,
+    );
+    let delivery_id = client.record_delivery(
+        &labor_id,
+        &1_725_000_000,
+        &Symbol::new(&env, "vaginal"),
+        &Symbol::new(&env, "vertex"),
+        &vec![&env],
+        &300,
+        &provider,
+    );
+
+    let res = client.try_record_newborn(
+        &impostor,
+        &delivery_id,
+        &1_725_000_100,
+        &symbol_short!("female"),
+        &3200,
+        &50,
+        &34,
+        &8,
+        &9,
+        &39,
+    );
+    assert!(res.is_err());
+}
+
+#[test]
+#[should_panic]
+fn test_track_pediatric_growth_requires_provider_auth() {
+    let env = Env::default();
+    let contract_id = env.register(MaternalChildHealthContract, ());
+    let client = MaternalChildHealthContractClient::new(&env, &contract_id);
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+
+    client.track_pediatric_growth(
+        &provider,
+        &patient,
+        &1_730_000_000,
+        &12,
+        &980,
+        &7550,
+        &Some(4600),
+        &1720,
+    );
 }
 
 #[test]

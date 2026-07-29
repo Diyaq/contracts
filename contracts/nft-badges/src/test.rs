@@ -69,3 +69,40 @@ fn non_admin_cannot_mint() {
     let student  = Address::generate(&env);
     client.mint(&attacker, &student, &s(&env, "t"), &s(&env, "A"), &s(&env, "u"));
 }
+
+#[test]
+fn revoke_flags_badge_with_reason() {
+    let (env, client, admin) = setup();
+    let student = Address::generate(&env);
+    let id = client.mint(&admin, &student, &s(&env, "completion"), &s(&env, "A"), &s(&env, "u"));
+
+    client.revoke(&admin, &id, &s(&env, "fraudulent credential"));
+
+    let badge = client.get_badge(&id);
+    assert!(badge.revoked);
+    assert_eq!(badge.revoked_reason, Some(s(&env, "fraudulent credential")));
+}
+
+#[test]
+fn double_revoke_is_rejected() {
+    let (env, client, admin) = setup();
+    let student = Address::generate(&env);
+    let id = client.mint(&admin, &student, &s(&env, "completion"), &s(&env, "A"), &s(&env, "u"));
+
+    client.revoke(&admin, &id, &s(&env, "reason 1"));
+    let err = client.try_revoke(&admin, &id, &s(&env, "reason 2")).unwrap_err().unwrap();
+    assert_eq!(err, Error::AlreadyRevoked);
+}
+
+#[test]
+fn duplicate_mint_same_recipient_and_badge_type_is_rejected() {
+    let (env, client, admin) = setup();
+    let student = Address::generate(&env);
+    client.mint(&admin, &student, &s(&env, "completion"), &s(&env, "A"), &s(&env, "u1"));
+
+    let err = client
+        .try_mint(&admin, &student, &s(&env, "completion"), &s(&env, "B"), &s(&env, "u2"))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::AlreadyMinted);
+}

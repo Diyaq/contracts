@@ -86,6 +86,11 @@ impl ScholarshipFundContract{
         let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
         if admin!=stored{return Err(Error::Unauthorized);}
         if amount<=0{return Err(Error::ZeroAmount);}
+        let eligible:bool=env.storage().persistent().get(&DataKey::Eligible(recipient.clone())).unwrap_or(false);
+        if !eligible{return Err(Error::RecipientNotEligible);}
+        let prior_awards:i128=env.storage().persistent().get(&DataKey::RecipientAwards(recipient.clone())).unwrap_or(0);
+        let cap:i128=env.storage().persistent().get(&DataKey::RecipientCap(recipient.clone())).unwrap_or(0);
+        if cap>0 && prior_awards+amount>cap{return Err(Error::RecipientCapExceeded);}
         let pool:i128=env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0);
         if pool<amount{return Err(Error::InsufficientFunds);}
         env.storage().instance().set(&DataKey::PoolBalance,&(pool-amount));
@@ -99,6 +104,8 @@ impl ScholarshipFundContract{
     }
     pub fn get_stats(env:Env)->FundStats{FundStats{pool_balance:env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0),committed_balance:env.storage().instance().get(&DataKey::CommittedFunds).unwrap_or(0)}}
     pub fn get_deposit(env:Env,depositor:Address)->i128{env.storage().persistent().get(&DataKey::Deposit(depositor)).unwrap_or(0)}
+    /// Cumulative amount this recipient has received across all disbursements.
+    pub fn get_recipient_awards(env:Env,recipient:Address)->i128{env.storage().persistent().get(&DataKey::RecipientAwards(recipient)).unwrap_or(0)}
 }
 #[cfg(test)]
 mod test;

@@ -15,8 +15,8 @@ fn setup() -> (Env, GovernanceVotingContractClient<'static>, Address) {
 
 fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
 
-fn create(env: &Env, client: &GovernanceVotingContractClient, proposer: &Address) -> u64 {
-    client.create_proposal(proposer, &s(env, "T"), &s(env, "D"), &3, &86_400)
+fn create(env: &Env, client: &GovernanceVotingContractClient, admin: &Address) -> u64 {
+    client.create_proposal(admin, &s(env, "T"), &s(env, "D"), &3, &86_400)
 }
 
 #[test]
@@ -30,6 +30,7 @@ fn create_proposal_returns_id_1() {
 fn vote_yes_increments_yes_votes() {
     let (env, client, admin) = setup();
     let voter = Address::generate(&env);
+    client.register_member(&admin, &voter);
     let id    = create(&env, &client, &admin);
     client.vote(&voter, &id, &VoteChoice::Yes);
     let p = client.get_proposal(&id);
@@ -41,6 +42,7 @@ fn vote_yes_increments_yes_votes() {
 fn vote_no_increments_no_votes() {
     let (env, client, admin) = setup();
     let voter = Address::generate(&env);
+    client.register_member(&admin, &voter);
     let id    = create(&env, &client, &admin);
     client.vote(&voter, &id, &VoteChoice::No);
     let p = client.get_proposal(&id);
@@ -52,6 +54,7 @@ fn vote_no_increments_no_votes() {
 fn double_vote_panics() {
     let (env, client, admin) = setup();
     let voter = Address::generate(&env);
+    client.register_member(&admin, &voter);
     let id    = create(&env, &client, &admin);
     client.vote(&voter, &id, &VoteChoice::Yes);
     client.vote(&voter, &id, &VoteChoice::No);
@@ -63,6 +66,7 @@ fn finalize_passes_when_quorum_met_and_yes_majority() {
     let id = create(&env, &client, &admin);
     for _ in 0..3 {
         let v = Address::generate(&env);
+        client.register_member(&admin, &v);
         client.vote(&v, &id, &VoteChoice::Yes);
     }
     env.ledger().set_timestamp(env.ledger().timestamp() + 86_401);
@@ -75,6 +79,7 @@ fn finalize_rejected_when_quorum_not_met() {
     let (env, client, admin) = setup();
     let id = create(&env, &client, &admin);
     let v = Address::generate(&env);
+    client.register_member(&admin, &v);
     client.vote(&v, &id, &VoteChoice::Yes); // only 1, quorum=3
     env.ledger().set_timestamp(env.ledger().timestamp() + 86_401);
     let status = client.finalize(&id);
@@ -85,8 +90,58 @@ fn finalize_rejected_when_quorum_not_met() {
 fn has_voted_returns_false_before_voting() {
     let (env, client, admin) = setup();
     let voter = Address::generate(&env);
+    client.register_member(&admin, &voter);
     let id    = create(&env, &client, &admin);
     assert!(!client.has_voted(&id, &voter));
     client.vote(&voter, &id, &VoteChoice::Yes);
     assert!(client.has_voted(&id, &voter));
+}
+
+#[test]
+#[should_panic]
+fn non_admin_cannot_create_proposal() {
+    let (env, client, admin) = setup();
+    let non_admin = Address::generate(&env);
+    client.create_proposal(&non_admin, &s(&env, "T"), &s(&env, "D"), &3, &86_400);
+}
+
+#[test]
+#[should_panic]
+fn non_member_cannot_vote() {
+    let (env, client, admin) = setup();
+    let non_member = Address::generate(&env);
+    let id = create(&env, &client, &admin);
+    client.vote(&non_member, &id, &VoteChoice::Yes);
+}
+
+#[test]
+fn max_proposals_enforced() {
+    let (env, client, admin) = setup();
+    for i in 0..100 {
+        let id = create(&env, &client, &admin);
+        assert_eq!(id, (i + 1) as u64);
+    }
+    let res = client.try_create_proposal(&admin, &s(&env, "T"), &s(&env, "D"), &3, &86_400);
+    assert!(res.is_err());
+}
+
+#[test]
+fn member_can_vote() {
+    let (env, client, admin) = setup();
+    let voter = Address::generate(&env);
+    client.register_member(&admin, &voter);
+    let id = create(&env, &client, &admin);
+    client.vote(&voter, &id, &VoteChoice::Yes);
+    assert!(client.has_voted(&id, &voter));
+}
+
+#[test]
+fn unregister_member_prevents_voting() {
+    let (env, client, admin) = setup();
+    let voter = Address::generate(&env);
+    client.register_member(&admin, &voter);
+    client.unregister_member(&admin, &voter);
+    let id = create(&env, &client, &admin);
+    let res = client.try_vote(&voter, &id, &VoteChoice::Yes);
+    assert!(res.is_err());
 }

@@ -73,6 +73,7 @@ pub struct ImagingReport {
     pub report_hash: BytesN<32>,
     pub critical_findings: bool,
     pub reported_at: u64,
+    pub critical_finding_acknowledged_at: Option<u64>,
 }
 
 #[contracttype]

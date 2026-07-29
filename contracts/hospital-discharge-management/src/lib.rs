@@ -42,6 +42,13 @@ pub struct HospitalDischargeContract;
 
 #[contractimpl]
 impl HospitalDischargeContract {
+    /// Initialize the contract with a hospital registry address
+    pub fn initialize(env: Env, hospital_registry: Address) -> Result<(), Error> {
+        hospital_registry.require_auth();
+        save_hospital_registry(&env, &hospital_registry);
+        Ok(())
+    }
+
     /// Initialize a new discharge planning process
     pub fn initiate_discharge_planning(
         env: Env,
@@ -146,8 +153,9 @@ impl HospitalDischargeContract {
     ) -> Result<(), Error> {
         caller.require_auth();
 
-        // Validate plan exists
+        // Validate plan exists and caller is authorized
         validate_plan_exists(&env, discharge_plan_id)?;
+        Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
 
         let orders = DischargeOrders {
             discharge_plan_id,
@@ -180,8 +188,9 @@ impl HospitalDischargeContract {
     ) -> Result<(), Error> {
         caller.require_auth();
 
-        // Validate plan exists
+        // Validate plan exists and caller is authorized
         validate_plan_exists(&env, discharge_plan_id)?;
+        Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
 
         let home_health = HomeHealthArrangement {
             discharge_plan_id,
@@ -216,8 +225,9 @@ impl HospitalDischargeContract {
     ) -> Result<(), Error> {
         caller.require_auth();
 
-        // Validate plan exists
+        // Validate plan exists and caller is authorized
         validate_plan_exists(&env, discharge_plan_id)?;
+        Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
 
         let dme_order = DMEOrder {
             discharge_plan_id,
@@ -315,8 +325,9 @@ impl HospitalDischargeContract {
     ) -> Result<(), Error> {
         caller.require_auth();
 
-        // Validate plan exists
+        // Validate plan exists and caller is authorized
         validate_plan_exists(&env, discharge_plan_id)?;
+        Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
 
         let coordination = SNFCoordination {
             discharge_plan_id,
@@ -349,7 +360,8 @@ impl HospitalDischargeContract {
     ) -> Result<(), Error> {
         caller.require_auth();
 
-        // Validate plan exists and get it
+        // Validate plan exists and caller is authorized
+        Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
         let mut plan = get_discharge_plan(&env, discharge_plan_id)?;
 
         // Update plan status
@@ -390,8 +402,9 @@ impl HospitalDischargeContract {
     ) -> Result<(), Error> {
         caller.require_auth();
 
-        // Validate plan exists
+        // Validate plan exists and caller is authorized
         validate_plan_exists(&env, discharge_plan_id)?;
+        Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
 
         let risk_level = if risk_score >= 75 {
             RiskLevel::High
@@ -433,5 +446,13 @@ impl HospitalDischargeContract {
         discharge_plan_id: u64,
     ) -> Result<ReadinessScore, Error> {
         get_readiness_assessment(&env, discharge_plan_id)
+    }
+
+    fn verify_plan_authorization(env: &Env, caller: &Address, plan_id: u64) -> Result<(), Error> {
+        let plan = get_discharge_plan(env, plan_id)?;
+        if caller != &plan.created_by {
+            return Err(Error::Unauthorized);
+        }
+        Ok(())
     }
 }

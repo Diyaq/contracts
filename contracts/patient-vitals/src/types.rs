@@ -70,6 +70,23 @@ pub enum DataKey {
     LatestRawWindow(Address),
     /// Last alert timestamp for (patient, vital_type) — cooldown tracking
     LastAlertTime(Address, Symbol),
+    /// Index of all raw-window and agg-window indices written for a patient.
+    /// Stored as a WindowIndex struct; updated on every record_vital_signs call.
+    /// Required so deregister_patient can enumerate and purge all buckets.
+    PatientWindows(Address),
+}
+
+/// Tracks which RawWindow and AggWindow bucket indices have been written for
+/// a given patient so they can be fully purged on deregistration.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WindowIndex {
+    /// All distinct `raw_idx` values (= measurement_time / RAW_WINDOW_SECONDS)
+    /// that have ever been written for this patient.
+    pub raw_indices: soroban_sdk::Vec<u64>,
+    /// All distinct `agg_idx` values (= measurement_time / AGG_WINDOW_SECONDS)
+    /// that have ever been written for this patient.
+    pub agg_indices: soroban_sdk::Vec<u64>,
 }
 
 #[contracttype]

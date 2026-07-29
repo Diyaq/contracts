@@ -164,6 +164,7 @@ impl MedicalClaimsSystem {
         }
 
         validate_policy_metadata(&policy).map_err(|_| Error::InvalidPolicyMetadata)?;
+        Self::validate_claim_amounts(&service_codes, total_amount)?;
 
         // #300: Verify that the patient has granted consent to this provider
         // before creating a claim record (HIPAA compliance).
@@ -290,16 +291,18 @@ impl MedicalClaimsSystem {
             patient_responsibility,
         )?;
 
+        // Re-adjudicating an appealed claim must preserve any payments already
+        // recorded against the prior adjudication rather than wiping them out.
+        let is_reappeal = claim.status == ClaimStatus::Appealed;
+
         claim.status = ClaimStatus::Adjudicated;
         claim.approved_amount = Some(approved_amount);
         claim.patient_responsibility = Some(patient_responsibility);
-        claim.insurer_paid_amount = 0;
-        claim.patient_paid_amount = 0;
-        claim.reconciliation_status = if approved_amount == 0 && patient_responsibility == 0 {
-            ReconciliationStatus::FullyReconciled
-        } else {
-            ReconciliationStatus::Pending
-        };
+        if !is_reappeal {
+            claim.insurer_paid_amount = 0;
+            claim.patient_paid_amount = 0;
+        }
+        Self::refresh_reconciliation_status(&mut claim)?;
 
         env.storage()
             .persistent()
@@ -310,14 +313,16 @@ impl MedicalClaimsSystem {
         env.storage()
             .persistent()
             .set(&DataKey::DenialInfos(claim_id), &denied_lines);
-        env.storage().persistent().set(
-            &DataKey::ClaimPayment(claim_id),
-            &Vec::<InsurerPaymentRecord>::new(&env),
-        );
-        env.storage().persistent().set(
-            &DataKey::PatientPayment(claim_id),
-            &Vec::<PatientPaymentRecord>::new(&env),
-        );
+        if !is_reappeal {
+            env.storage().persistent().set(
+                &DataKey::ClaimPayment(claim_id),
+                &Vec::<InsurerPaymentRecord>::new(&env),
+            );
+            env.storage().persistent().set(
+                &DataKey::PatientPayment(claim_id),
+                &Vec::<PatientPaymentRecord>::new(&env),
+            );
+        }
 
         Ok(())
     }
