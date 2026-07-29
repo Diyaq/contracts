@@ -96,10 +96,17 @@ fn test_conduct_assessment_and_record_scores() {
     assert_eq!(assessment_id, 1);
 
     // Record PHQ9
-    client.record_phq9_score(&assessment_id, &15, &vec![&env, 3, 3, 3, 3, 3], &1690000000);
+    client.record_phq9_score(
+        &assessment_id,
+        &provider_id,
+        &15,
+        &vec![&env, 3, 3, 3, 3, 3],
+        &1690000000,
+    );
     // Record GAD7
     client.record_gad7_score(
         &assessment_id,
+        &provider_id,
         &12,
         &vec![&env, 2, 2, 2, 2, 2, 2],
         &1690000000,
@@ -339,7 +346,13 @@ fn test_high_risk_assessment_triggers_crisis_escalation() {
     );
 
     // Record PHQ9 and GAD7 to have full data
-    mental_health.record_phq9_score(&assessment_id, &22, &vec![&env, 3, 3, 3, 3, 3], &1690000000);
+    mental_health.record_phq9_score(
+        &assessment_id,
+        &provider_id,
+        &22,
+        &vec![&env, 3, 3, 3, 3, 3],
+        &1690000000,
+    );
 
     // Assess with "high" risk - should trigger escalation
     match mental_health.try_assess_suicide_risk(
@@ -533,4 +546,150 @@ fn test_crisis_escalation_without_emergency_contract_configured() {
         &BytesN::from_array(&env, &[2; 32]),
     );
     assert_eq!(plan_id, 1);
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
+fn test_record_phq9_score_unauth() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MentalHealthContract, ());
+    let client = MentalHealthContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    grant_consent(&env, &client, &patient_id, "assessment", &provider_id);
+
+    let assessment_id = client.conduct_mental_health_assessment(
+        &patient_id,
+        &provider_id,
+        &1690000000,
+        &Symbol::new(&env, "initial"),
+        &vec![&env, String::from_str(&env, "anxiety")],
+        &vec![&env, Symbol::new(&env, "PHQ9")],
+        &BytesN::from_array(&env, &[0; 32]),
+    );
+
+    env.set_auths(&[]);
+    client.record_phq9_score(&assessment_id, &provider_id, &15, &vec![&env, 3], &1690000000);
+}
+
+#[test]
+fn test_record_phq9_score_rejects_out_of_range() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MentalHealthContract, ());
+    let client = MentalHealthContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    grant_consent(&env, &client, &patient_id, "assessment", &provider_id);
+
+    let assessment_id = client.conduct_mental_health_assessment(
+        &patient_id,
+        &provider_id,
+        &1690000000,
+        &Symbol::new(&env, "initial"),
+        &vec![&env, String::from_str(&env, "anxiety")],
+        &vec![&env, Symbol::new(&env, "PHQ9")],
+        &BytesN::from_array(&env, &[0; 32]),
+    );
+
+    let result = client.try_record_phq9_score(
+        &assessment_id,
+        &provider_id,
+        &28,
+        &vec![&env, 3],
+        &1690000000,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_record_gad7_score_rejects_out_of_range() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MentalHealthContract, ());
+    let client = MentalHealthContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    grant_consent(&env, &client, &patient_id, "assessment", &provider_id);
+
+    let assessment_id = client.conduct_mental_health_assessment(
+        &patient_id,
+        &provider_id,
+        &1690000000,
+        &Symbol::new(&env, "initial"),
+        &vec![&env, String::from_str(&env, "anxiety")],
+        &vec![&env, Symbol::new(&env, "PHQ9")],
+        &BytesN::from_array(&env, &[0; 32]),
+    );
+
+    let result =
+        client.try_record_gad7_score(&assessment_id, &provider_id, &22, &vec![&env, 3], &1690000000);
+    assert!(result.is_err());
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
+fn test_record_therapy_session_unauth() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MentalHealthContract, ());
+    let client = MentalHealthContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    grant_consent(&env, &client, &patient_id, "treatment_plan", &provider_id);
+    grant_consent(&env, &client, &patient_id, "therapy_session", &provider_id);
+
+    let plan_id = client.create_treatment_plan(
+        &patient_id,
+        &provider_id,
+        &vec![&env, String::from_str(&env, "F32.1")],
+        &vec![&env],
+        &vec![&env, String::from_str(&env, "CBT")],
+        &String::from_str(&env, "weekly"),
+        &1700000000,
+    );
+
+    env.set_auths(&[]);
+    client.record_therapy_session(
+        &plan_id,
+        &1690000000,
+        &Symbol::new(&env, "individual"),
+        &45,
+        &vec![&env, String::from_str(&env, "Cognitive Restructuring")],
+        &BytesN::from_array(&env, &[1; 32]),
+        &None,
+    );
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
+fn test_document_hospitalization_unauth() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MentalHealthContract, ());
+    let client = MentalHealthContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let facility_id = Address::generate(&env);
+    grant_consent(&env, &client, &patient_id, "hospitalization", &facility_id);
+
+    env.set_auths(&[]);
+    client.document_hospitalization(
+        &patient_id,
+        &1690000000,
+        &String::from_str(&env, "severe breakdown"),
+        &Symbol::new(&env, "voluntary"),
+        &facility_id,
+        &None,
+    );
 }
