@@ -44,19 +44,7 @@ pub enum Error {
     NotAuthorized = 6,
     InvalidAddress = 7,
     PlanNotFound = 8,
-}
-
-/// Structured coverage plan with service-code allowlist used by downstream
-/// contracts (e.g. prior-authorization) to verify benefit eligibility.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CoveragePlan {
-    pub plan_id: u64,
-    pub plan_name: String,
-    pub service_codes: Vec<String>,
-    pub is_active: bool,
-    pub effective_from: u64,
-    pub effective_until: Option<u64>,
+    BatchSizeExceeded = 9,
 }
 
 #[contracttype]
@@ -99,6 +87,7 @@ pub enum DataKey {
     ClaimsReviewers(Address),
     /// insurer_wallet -> Vec<CoveragePlan>
     CoveragePlans(Address),
+    CoveragePlanCounter(Address),
 }
 
 #[contract]
@@ -303,14 +292,6 @@ impl InsurerRegistry {
         Ok(())
     }
 
-    /// Return all coverage plans registered for an insurer.
-    pub fn get_coverage_plans(env: Env, insurer_wallet: Address) -> Vec<CoveragePlan> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::CoveragePlans(insurer_wallet))
-            .unwrap_or_else(|| Vec::new(&env))
-    }
-
     fn assert_active_insurer(env: &Env, wallet: &Address) -> Result<(), Error> {
         let key = DataKey::Insurer(wallet.clone());
         let insurer: InsurerData = env
@@ -319,6 +300,17 @@ impl InsurerRegistry {
             .get(&key)
             .ok_or(Error::InsurerNotFound)?;
         if insurer.credential.revoked_at.is_some() {
+            return Err(Error::NotAuthorized);
+        }
+        Ok(())
+    }
+
+    fn assert_credential_valid(env: &Env, insurer: &InsurerData) -> Result<(), Error> {
+        if insurer.credential.revoked_at.is_some() {
+            return Err(Error::NotAuthorized);
+        }
+        let now = env.ledger().timestamp();
+        if insurer.credential.expires_at <= now {
             return Err(Error::NotAuthorized);
         }
         Ok(())
