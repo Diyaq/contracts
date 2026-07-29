@@ -435,13 +435,20 @@ impl NutritionCareContract {
     pub fn document_nutrition_intervention(
         env: Env,
         care_plan_id: u64,
+        dietitian_id: Address,
         intervention_date: u64,
         intervention_type: Symbol,
         topics_covered: Vec<String>,
         duration_minutes: u32,
         patient_comprehension: Symbol,
     ) -> Result<(), Error> {
+        dietitian_id.require_auth();
+
         load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+
+        if !is_provider_authorized(&env, care_plan_id, &dietitian_id) {
+            return Err(Error::ProviderNotAuthorized);
+        }
 
         let entry = NutritionIntervention {
             care_plan_id,
@@ -542,11 +549,18 @@ impl NutritionCareContract {
     pub fn assess_malnutrition_risk(
         env: Env,
         assessment_id: u64,
+        dietitian_id: Address,
         screening_tool: Symbol,
         score: u32,
         risk_level: Symbol,
     ) -> Result<(), Error> {
-        load_assessment(&env, assessment_id).ok_or(Error::AssessmentNotFound)?;
+        dietitian_id.require_auth();
+
+        let assessment = load_assessment(&env, assessment_id).ok_or(Error::AssessmentNotFound)?;
+
+        if assessment.dietitian_id != dietitian_id {
+            return Err(Error::ProviderNotAuthorized);
+        }
 
         // Validate screening tool
         let valid_tools = [
@@ -633,13 +647,20 @@ impl NutritionCareContract {
     pub fn evaluate_nutrition_outcomes(
         env: Env,
         care_plan_id: u64,
+        dietitian_id: Address,
         evaluation_date: u64,
         weight_change_kg_x100: i64,
         lab_improvements: Vec<String>,
         goals_met: Vec<String>,
         continue_care: bool,
     ) -> Result<(), Error> {
+        dietitian_id.require_auth();
+
         load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+
+        if !is_provider_authorized(&env, care_plan_id, &dietitian_id) {
+            return Err(Error::ProviderNotAuthorized);
+        }
 
         let evaluation = OutcomeEvaluation {
             care_plan_id,
