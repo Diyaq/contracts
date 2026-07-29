@@ -75,10 +75,11 @@ pub struct CredentialAnchor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoveragePlan {
     pub plan_id: u64,
-    pub tier: Symbol,
-    pub services: Vec<String>,
-    pub copay_bps: u32,
-    pub deductible: i128,
+    pub plan_name: String,
+    pub service_codes: Vec<String>,
+    pub is_active: bool,
+    pub effective_from: u64,
+    pub effective_until: Option<u64>,
 }
 
 #[contracttype]
@@ -325,17 +326,19 @@ impl InsurerRegistry {
     ///
     /// # Arguments
     /// * `wallet` - The wallet address of the insurance company
-    /// * `tier` - Coverage tier label (e.g. bronze, silver, gold)
-    /// * `services` - List of covered service codes or names
-    /// * `copay_bps` - Copay as basis points (e.g. 2000 = 20%)
-    /// * `deductible` - Annual deductible amount in the smallest currency unit
+    /// * `plan_name` - Human-readable plan name (e.g. "PPO Gold")
+    /// * `service_codes` - List of covered CPT/service codes
+    /// * `is_active` - Whether the plan is currently active
+    /// * `effective_from` - Ledger timestamp when the plan becomes effective
+    /// * `effective_until` - Optional expiry timestamp for the plan
     pub fn add_coverage_plan(
         env: Env,
         wallet: Address,
-        tier: Symbol,
-        services: Vec<String>,
-        copay_bps: u32,
-        deductible: i128,
+        plan_name: String,
+        service_codes: Vec<String>,
+        is_active: bool,
+        effective_from: u64,
+        effective_until: Option<u64>,
     ) -> Result<u64, Error> {
         validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
         wallet.require_auth();
@@ -355,10 +358,11 @@ impl InsurerRegistry {
 
         let plan = CoveragePlan {
             plan_id: next_id,
-            tier,
-            services,
-            copay_bps,
-            deductible,
+            plan_name,
+            service_codes,
+            is_active,
+            effective_from,
+            effective_until,
         };
 
         let plans_key = DataKey::CoveragePlans(wallet.clone());

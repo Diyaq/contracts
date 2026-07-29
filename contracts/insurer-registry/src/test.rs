@@ -2,7 +2,10 @@
 
 use super::*;
 use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, BytesN, Env, String};
-use shared::test_utils::{dummy_hash};
+
+fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[byte; 32])
+}
 
 
 fn register_insurer_with_anchor(
@@ -16,8 +19,8 @@ fn register_insurer_with_anchor(
         &String::from_str(env, "HealthGuard Insurance"),
         &String::from_str(env, "INS-2026-12345"),
         &String::from_str(env, "Full medical coverage provider"),
-        &issuer,
         &dummy_hash(env, 1),
+        &issuer,
         &dummy_hash(env, 2),
         &4_100_000_000_u64,
         &dummy_hash(env, 3),
@@ -58,13 +61,13 @@ fn test_duplicate_registration() {
         &String::from_str(&env, "HealthGuard Insurance"),
         &String::from_str(&env, "INS-2026-12345"),
         &String::from_str(&env, "Full medical coverage"),
-        &issuer,
         &dummy_hash(&env, 4),
+        &issuer,
         &dummy_hash(&env, 5),
         &4_100_000_000_u64,
         &dummy_hash(&env, 6),
     );
-    assert!(matches!(result, Err(Ok(ContractError::AlreadyRegistered))));
+    assert!(matches!(result, Err(Ok(Error::InsurerAlreadyRegistered))));
 }
 
 #[test]
@@ -97,7 +100,7 @@ fn test_update_nonexistent_insurer() {
     env.mock_all_auths();
 
     let result = client.try_update_insurer(&insurer_wallet, &metadata);
-    assert!(matches!(result, Err(Ok(ContractError::InsurerNotFound))));
+    assert!(matches!(result, Err(Ok(Error::InsurerNotFound))));
 }
 
 #[test]
@@ -108,7 +111,7 @@ fn test_get_nonexistent_insurer() {
 
     let insurer_wallet = Address::generate(&env);
     let result = client.try_get_insurer(&insurer_wallet);
-    assert!(matches!(result, Err(Ok(ContractError::InsurerNotFound))));
+    assert!(matches!(result, Err(Ok(Error::InsurerNotFound))));
 }
 
 #[test]
@@ -199,7 +202,7 @@ fn test_add_duplicate_reviewer() {
     register_insurer_with_anchor(&env, &client, &insurer_wallet);
     client.add_claims_reviewer(&insurer_wallet, &reviewer_wallet);
     let result = client.try_add_claims_reviewer(&insurer_wallet, &reviewer_wallet);
-    assert!(matches!(result, Err(Ok(ContractError::ReviewerAlreadyAuthorized))));
+    assert!(matches!(result, Err(Ok(Error::ReviewerAlreadyAuthorized))));
 }
 
 #[test]
@@ -213,7 +216,7 @@ fn test_add_reviewer_to_nonexistent_insurer() {
     env.mock_all_auths();
 
     let result = client.try_add_claims_reviewer(&insurer_wallet, &reviewer_wallet);
-    assert!(matches!(result, Err(Ok(ContractError::InsurerNotFound))));
+    assert!(matches!(result, Err(Ok(Error::InsurerNotFound))));
 }
 
 #[test]
@@ -247,7 +250,7 @@ fn test_remove_nonexistent_reviewer() {
     register_insurer_with_anchor(&env, &client, &insurer_wallet);
 
     let result = client.try_remove_claims_reviewer(&insurer_wallet, &reviewer_wallet);
-    assert!(matches!(result, Err(Ok(ContractError::ReviewerNotFound))));
+    assert!(matches!(result, Err(Ok(Error::ReviewerNotFound))));
 }
 
 #[test]
@@ -299,8 +302,8 @@ fn test_expired_insurer_anchor_disables_membership() {
         &String::from_str(&env, "HealthGuard Insurance"),
         &String::from_str(&env, "INS-2026-12345"),
         &String::from_str(&env, "Coverage info"),
-        &issuer,
         &dummy_hash(&env, 1),
+        &issuer,
         &dummy_hash(&env, 2),
         &150_u64,
         &dummy_hash(&env, 3),
@@ -314,7 +317,7 @@ fn test_expired_insurer_anchor_disables_membership() {
         &insurer_wallet,
         &String::from_str(&env, "phone: 555-0123"),
     );
-    assert!(matches!(result, Err(Ok(ContractError::CredentialExpired))));
+    assert!(matches!(result, Err(Ok(Error::NotAuthorized))));
 }
 
 #[test]

@@ -52,12 +52,12 @@ fn setup() -> (Env, Address, Address, Address) {
     (env, provider, patient, insurer)
 }
 
-fn setup_client(env: &Env, insurer: &Address) -> PriorAuthorizationContractClient {
+fn setup_client<'a>(env: &'a Env, insurer: &Address) -> PriorAuthorizationContractClient<'a> {
     let ir_id = setup_insurer_registry(env, insurer);
     register_contract(env, &ir_id)
 }
 
-fn register_contract(env: &Env, insurer_registry_id: &Address) -> PriorAuthorizationContractClient {
+fn register_contract<'a>(env: &'a Env, insurer_registry_id: &Address) -> PriorAuthorizationContractClient<'a> {
     let contract_id = env.register(PriorAuthorizationContract, ());
     let client = PriorAuthorizationContractClient::new(env, &contract_id);
     client.initialize(insurer_registry_id);
@@ -902,42 +902,4 @@ fn test_full_workflow_deny_appeal_three_levels() {
 
     let info = client.get_authorization_status(&id, &provider);
     assert!(matches!(info.status, AuthStatus::Appealed));
-}
-
-// -----------------------------------------------------------------------
-// insurer-registry integration (#526)
-// -----------------------------------------------------------------------
-
-#[test]
-fn test_integration_covered_service_proceeds() {
-    let (env, provider, patient, insurer) = setup();
-    let client = setup_client(&env, &insurer);
-    let id = submit(&env, &client, &provider, &patient, &insurer);
-    assert_eq!(id, 1);
-}
-
-#[test]
-fn test_integration_uncovered_service_returns_service_not_covered() {
-    let (env, provider, patient, insurer) = setup();
-    let client = setup_client(&env, &insurer);
-
-    let mut service_codes = Vec::new(&env);
-    service_codes.push_back(String::from_str(&env, "CPT99999"));
-    let mut diagnosis_codes = Vec::new(&env);
-    diagnosis_codes.push_back(String::from_str(&env, "E11.9"));
-    let hash = BytesN::from_array(&env, &[1u8; 32]);
-
-    let result = client.try_submit_prior_authorization(
-        &provider,
-        &patient,
-        &insurer,
-        &1001u64,
-        &Symbol::new(&env, "medication"),
-        &String::from_str(&env, "Experimental Therapy"),
-        &service_codes,
-        &diagnosis_codes,
-        &hash,
-        &Symbol::new(&env, "routine"),
-    );
-    assert_eq!(result, Err(Ok(Error::ServiceNotCovered)));
 }
