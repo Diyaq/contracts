@@ -27,12 +27,12 @@ use soroban_sdk::{contract,contracterror,contractimpl,contracttype,symbol_short,
 #[contracterror]
 #[derive(Copy,Clone,Debug,Eq,PartialEq)]
 #[repr(u32)]
-pub enum Error{NotInitialized=1,AlreadyInitialized=2,Unauthorized=3,ZeroAmount=4,InsufficientFunds=5}
+pub enum Error{NotInitialized=1,AlreadyInitialized=2,Unauthorized=3,ZeroAmount=4,InsufficientFunds=5,FundsCommitted=6}
 #[contracttype]
-pub enum DataKey{Admin,PoolBalance,Deposit(Address)}
+pub enum DataKey{Admin,PoolBalance,CommittedFunds,Deposit(Address)}
 #[contracttype]
 #[derive(Clone,Debug,Eq,PartialEq)]
-pub struct FundStats{pub pool_balance:i128}
+pub struct FundStats{pub pool_balance:i128,pub committed_balance:i128}
 #[contract]
 pub struct ScholarshipFundContract;
 #[contractimpl]
@@ -60,9 +60,25 @@ impl ScholarshipFundContract{
         if held<amount{return Err(Error::InsufficientFunds);}
         let pool:i128=env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0);
         if pool<amount{return Err(Error::InsufficientFunds);}
+        let committed:i128=env.storage().instance().get(&DataKey::CommittedFunds).unwrap_or(0);
+        if pool-committed<amount{return Err(Error::FundsCommitted);}
         env.storage().persistent().set(&DataKey::Deposit(depositor.clone()),&(held-amount));
         env.storage().instance().set(&DataKey::PoolBalance,&(pool-amount));
         env.events().publish((symbol_short!("WITHDRAW"),depositor),amount);
+        Ok(())
+    }
+    /// Earmark pool funds for a pending award, protecting them from donor withdrawal.
+    /// Admin-only. Can only commit funds currently uncommitted in the pool.
+    pub fn commit_funds(env:Env,admin:Address,amount:i128)->Result<(),Error>{
+        admin.require_auth();
+        let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
+        if admin!=stored{return Err(Error::Unauthorized);}
+        if amount<=0{return Err(Error::ZeroAmount);}
+        let pool:i128=env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0);
+        let committed:i128=env.storage().instance().get(&DataKey::CommittedFunds).unwrap_or(0);
+        if pool-committed<amount{return Err(Error::InsufficientFunds);}
+        env.storage().instance().set(&DataKey::CommittedFunds,&(committed+amount));
+        env.events().publish((symbol_short!("COMMIT"),admin),amount);
         Ok(())
     }
     pub fn disburse(env:Env,admin:Address,recipient:Address,amount:i128,reason:String)->Result<(),Error>{
@@ -70,14 +86,26 @@ impl ScholarshipFundContract{
         let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
         if admin!=stored{return Err(Error::Unauthorized);}
         if amount<=0{return Err(Error::ZeroAmount);}
+        let eligible:bool=env.storage().persistent().get(&DataKey::Eligible(recipient.clone())).unwrap_or(false);
+        if !eligible{return Err(Error::RecipientNotEligible);}
+        let prior_awards:i128=env.storage().persistent().get(&DataKey::RecipientAwards(recipient.clone())).unwrap_or(0);
+        let cap:i128=env.storage().persistent().get(&DataKey::RecipientCap(recipient.clone())).unwrap_or(0);
+        if cap>0 && prior_awards+amount>cap{return Err(Error::RecipientCapExceeded);}
         let pool:i128=env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0);
         if pool<amount{return Err(Error::InsufficientFunds);}
         env.storage().instance().set(&DataKey::PoolBalance,&(pool-amount));
+        let committed:i128=env.storage().instance().get(&DataKey::CommittedFunds).unwrap_or(0);
+        if committed>0{
+            let released=if amount<committed{amount}else{committed};
+            env.storage().instance().set(&DataKey::CommittedFunds,&(committed-released));
+        }
         env.events().publish((symbol_short!("DISBURSE"),recipient),(amount,reason));
         Ok(())
     }
-    pub fn get_stats(env:Env)->FundStats{FundStats{pool_balance:env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0)}}
+    pub fn get_stats(env:Env)->FundStats{FundStats{pool_balance:env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0),committed_balance:env.storage().instance().get(&DataKey::CommittedFunds).unwrap_or(0)}}
     pub fn get_deposit(env:Env,depositor:Address)->i128{env.storage().persistent().get(&DataKey::Deposit(depositor)).unwrap_or(0)}
+    /// Cumulative amount this recipient has received across all disbursements.
+    pub fn get_recipient_awards(env:Env,recipient:Address)->i128{env.storage().persistent().get(&DataKey::RecipientAwards(recipient)).unwrap_or(0)}
 }
 #[cfg(test)]
 mod test;

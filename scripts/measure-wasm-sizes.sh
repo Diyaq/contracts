@@ -43,8 +43,8 @@ EOF
 # Initialize CSV
 echo "Contract,Unoptimized (bytes),Optimized (bytes),Reduction (%),Status" > "$CSV_FILE"
 
-# Target size limit (200 KB)
-TARGET_SIZE=$((200 * 1024))
+# Target size limit (128 KB)
+TARGET_SIZE=$((128 * 1024))
 
 # Counters
 TOTAL_UNOPTIMIZED=0
@@ -167,7 +167,7 @@ cat >> "$REPORT_FILE" << EOF
 - **Total Optimized Size:** ${TOTAL_OPT_MB} MB
 - **Total Reduction:** ${TOTAL_REDUCTION}%
 - **Contracts Over Limit:** $OVER_LIMIT
-- **Target Size Limit:** 200 KB
+- **Target Size Limit:** 128 KB
 
 ## Optimization Tools Used
 
@@ -180,7 +180,7 @@ EOF
 
 if [ "$OVER_LIMIT" -gt 0 ]; then
     cat >> "$REPORT_FILE" << EOF
-⚠️ **$OVER_LIMIT contract(s) exceed the 200 KB size limit.**
+⚠️ **$OVER_LIMIT contract(s) exceed the 128 KB size limit.**
 
 Recommended actions:
 1. Review large contracts for code duplication
@@ -192,7 +192,7 @@ Recommended actions:
 EOF
 else
     cat >> "$REPORT_FILE" << EOF
-✅ **All contracts are within the 200 KB size limit.**
+✅ **All contracts are within the 128 KB size limit.**
 
 Continue monitoring binary sizes to prevent regression.
 
@@ -202,9 +202,10 @@ fi
 cat >> "$REPORT_FILE" << EOF
 ## Size Limit Rationale
 
-The 200 KB limit is based on:
+The 128 KB limit is based on:
 - Stellar network storage costs
 - Deployment transaction size limits
+- Current Stellar Mainnet contract size limit (128 KB)
 - Best practices for smart contract size
 - Balance between functionality and efficiency
 

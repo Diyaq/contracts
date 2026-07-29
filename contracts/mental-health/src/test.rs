@@ -96,10 +96,17 @@ fn test_conduct_assessment_and_record_scores() {
     assert_eq!(assessment_id, 1);
 
     // Record PHQ9
-    client.record_phq9_score(&assessment_id, &15, &vec![&env, 3, 3, 3, 3, 3], &1690000000);
+    client.record_phq9_score(
+        &assessment_id,
+        &provider_id,
+        &15,
+        &vec![&env, 3, 3, 3, 3, 3],
+        &1690000000,
+    );
     // Record GAD7
     client.record_gad7_score(
         &assessment_id,
+        &provider_id,
         &12,
         &vec![&env, 2, 2, 2, 2, 2, 2],
         &1690000000,
@@ -339,7 +346,13 @@ fn test_high_risk_assessment_triggers_crisis_escalation() {
     );
 
     // Record PHQ9 and GAD7 to have full data
-    mental_health.record_phq9_score(&assessment_id, &22, &vec![&env, 3, 3, 3, 3, 3], &1690000000);
+    mental_health.record_phq9_score(
+        &assessment_id,
+        &provider_id,
+        &22,
+        &vec![&env, 3, 3, 3, 3, 3],
+        &1690000000,
+    );
 
     // Assess with "high" risk - should trigger escalation
     match mental_health.try_assess_suicide_risk(

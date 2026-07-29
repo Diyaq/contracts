@@ -174,7 +174,9 @@ pub enum Error {
     MissingRecallReason = 28,
     /// Patient already has MAX_ACTIVE_PRESCRIPTIONS active prescriptions
     TooManyActivePrescriptions = 29,
-    StaleNonce = 30,
+    /// Provider has exceeded their per-window prescription issuance limit
+    RateLimitExceeded = 30,
+    StaleNonce = 31,
 }
 
 #[contracttype]
@@ -286,6 +288,14 @@ pub enum DataKey {
     PatientPrescriptions(Address),
     /// Per-caller nonce for replay attack protection: (caller) -> u64
     CallerNonce(Address),
+    /// Prescription template storage: (template_id) -> StoredTemplate
+    Template(u64),
+    /// Auto-incrementing counter for template IDs.
+    TemplateCounter,
+    /// Per-provider sliding-window prescription issuance limit override.
+    ProviderPrescriptionLimit(Address),
+    /// Per-provider sliding-window state (rate limiting).
+    ProviderPrescriptionWindow(Address),
 }
 
 #[contracttype]
@@ -568,82 +578,7 @@ impl PrescriptionContract {
             }
         }
 
-        // Allergy cross-check against allergy-management contract.
-        if req.bypass_allergy_check {
-            // Bypass requires admin role.
-            let admin: Option<Address> = env.storage().persistent().get(&DataKey::Admin);
-            match admin {
-                Some(ref a) if *a == provider_id => {}
-                _ => return Err(Error::AllergyBypassRequiresAdmin),
-            }
-        } else if let Some(allergy_addr) = env
-            .storage()
-            .persistent()
-            .get::<_, Address>(&DataKey::AllergyRegistry)
-        {
-            let allergy_client = AllergyManagementClient::new(&env, &allergy_addr);
-            let interactions =
-                allergy_client.check_drug_allergy_interaction(&patient_id, &req.medication_name);
-            if !interactions.is_empty() {
-                // Emit alert for every detected interaction.
-                for interaction in interactions.iter() {
-                    env.events().publish(
-                        (Symbol::new(&env, "allergy_interaction_alert"),),
-                        (
-                            patient_id.clone(),
-                            req.medication_name.clone(),
-                            interaction.allergen.clone(),
-                            interaction.severity.clone(),
-                        ),
-                    );
-                }
-                let strict: bool = env
-                    .storage()
-                    .persistent()
-                    .get(&DataKey::AllergyStrictMode)
-                    .unwrap_or(false);
-                if strict {
-                    return Err(Error::AllergyInteractionDetected);
-                }
-            }
-        }
-
-        // DEA registration check: controlled substances require a valid DEA number.
-        if req.is_controlled && req.schedule.is_some() {
-            match &req.dea_number {
-                None => return Err(Error::ControlledSubstanceViolation),
-                Some(dea) => {
-                    // A valid DEA number is always exactly 9 ASCII characters.
-                    // Reject anything that isn't 9 bytes long before byte extraction.
-                    // soroban_sdk::String::len() returns u32.
-                    if dea.len() != 9u32 {
-                        return Err(Error::ControlledSubstanceViolation);
-                    }
-                    let mut buf = [0u8; 9];
-                    dea.copy_into_slice(&mut buf);
-                    if !validate_dea_number(&buf) {
-                        return Err(Error::ControlledSubstanceViolation);
-                    }
-                }
-            }
-        }
-
-        // #215 – valid_until must be in the future and within a 1-year window
-        temporal::must_be_future(&env, req.valid_until)
-            .map_err(|_| Error::InvalidValidityWindow)?;
-        temporal::within_validity_window(
-            env.ledger().timestamp(),
-            req.valid_until,
-            shared::temporal::MAX_VALIDITY_WINDOW_SECS,
-        )
-        .map_err(|_| Error::InvalidValidityWindow)?;
-
-        // #478 – cap concurrent active prescriptions per patient.
-        if count_and_prune_active_prescriptions(&env, &patient_id) >= MAX_ACTIVE_PRESCRIPTIONS {
-            return Err(Error::TooManyActivePrescriptions);
-        }
-
-        let id = env
+        let template_id = env
             .storage()
             .instance()
             .get::<_, u64>(&DataKey::TemplateCounter)
@@ -673,8 +608,50 @@ impl PrescriptionContract {
             .set(&DataKey::Template(template_id), &stored);
         env.storage()
             .instance()
-            .set(&Symbol::new(&env, "ID_COUNTER"), &(id + 1));
-        add_patient_prescription(&env, &prescription.patient_id, id);
+            .set(&DataKey::TemplateCounter, &(template_id + 1));
+
+        Ok(template_id)
+    }
+
+    /// Issue a prescription from a reusable template created by the same provider.
+    /// Loads the template, constructs an IssueRequest from its fields, and delegates
+    /// to `do_issue_prescription`.
+    pub fn issue_from_template(
+        env: Env,
+        provider: Address,
+        patient: Address,
+        template_id: u64,
+        valid_until: u64,
+    ) -> Result<u64, Error> {
+        provider.require_auth();
+
+        let template: StoredTemplate = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Template(template_id))
+            .ok_or(Error::NotFound)?;
+
+        if template.provider != provider {
+            return Err(Error::Unauthorized);
+        }
+
+        let req = IssueRequest {
+            medication_name: template.medication_name,
+            ndc_code: template.ndc_code,
+            dosage: template.dosage,
+            quantity: template.quantity,
+            days_supply: template.days_supply,
+            refills_allowed: template.refills_allowed,
+            instructions_hash: template.instructions_hash,
+            is_controlled: template.is_controlled,
+            schedule: template.schedule,
+            valid_until,
+            substitution_allowed: template.substitution_allowed,
+            pharmacy_id: template.pharmacy_id,
+            bypass_allergy_check: template.bypass_allergy_check,
+            dea_number: template.dea_number,
+            bypass_reason_hash: template.bypass_reason_hash,
+        };
 
         do_issue_prescription(&env, provider, patient, req)
     }
@@ -1669,13 +1646,23 @@ fn do_issue_prescription(
         if let Some(_schedule) = req.schedule {
             match &req.dea_number {
                 Some(dea) => {
-                    if !validate_dea_number(dea.to_bytes().as_slice()) {
+                    if dea.len() != 9u32 {
+                        return Err(Error::ControlledSubstanceViolation);
+                    }
+                    let mut buf = [0u8; 9];
+                    dea.copy_into_slice(&mut buf);
+                    if !validate_dea_number(&buf) {
                         return Err(Error::ControlledSubstanceViolation);
                     }
                 }
                 None => return Err(Error::ControlledSubstanceViolation),
             }
         }
+    }
+
+    // ── #478: cap concurrent active prescriptions per patient ─────────────────
+    if count_and_prune_active_prescriptions(env, &patient_id) >= MAX_ACTIVE_PRESCRIPTIONS {
+        return Err(Error::TooManyActivePrescriptions);
     }
 
     // ── #480: rate-limit enforcement ──────────────────────────────────────────
@@ -1779,6 +1766,7 @@ fn do_issue_prescription(
     };
 
     env.storage().persistent().set(&rx_id, &prescription);
+    add_patient_prescription(env, &patient_id, rx_id);
 
     env.events().publish(
         (Symbol::new(env, "prescription_issued"),),

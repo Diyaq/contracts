@@ -6,14 +6,14 @@ This document describes the WASM binary size optimization strategy for the Healt
 
 ## Size Limit
 
-**Target Size Limit:** 200 KB per contract (optimized)
+**Target Size Limit:** 128 KB per contract (optimized)
 
 ### Rationale
 
-The 200 KB limit is based on:
+The 128 KB limit is based on:
 - **Stellar Network Storage Costs:** Smaller binaries reduce deployment and hosting costs
 - **Transaction Size Limits:** Deployment transactions have size constraints
-- **Best Practices:** Industry standard for smart contract efficiency
+- **Best Practices:** Aligns with current Stellar network contract size limit (128 KB on Mainnet)
 - **Performance:** Smaller binaries load and execute faster
 - **Network Efficiency:** Reduces bandwidth requirements
 
@@ -310,7 +310,7 @@ The `wasm-size-check.yml` workflow runs on every PR:
 
 1. Builds all contracts
 2. Optimizes binaries
-3. Checks sizes against 200 KB limit
+3. Checks sizes against 128 KB limit
 4. **Fails CI if any contract exceeds limit**
 5. Posts size report as PR comment
 6. Uploads size report as artifact
