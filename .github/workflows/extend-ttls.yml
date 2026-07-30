@@ -101,12 +101,12 @@ jobs:
         env:
           NETWORK: ${{ needs.ttl-monitoring.outputs.network }}
         run: |
-          MANIFEST="deployments/${NETWORK}.json"
+          export MANIFEST="deployments/${NETWORK}.json"
 
-          # Extract contract IDs — skip metadata keys that start with "_".
+          # Extract contract IDs - skip metadata keys that start with "_".
           CONTRACT_IDS=$(python3 - <<'EOF'
-          import json, sys
-          with open("${MANIFEST}") as f:
+          import json, sys, os
+          with open(os.environ["MANIFEST"]) as f:
               d = json.load(f)
           ids = [v for k, v in d.items() if not k.startswith("_") and v]
           print("\n".join(ids))
@@ -121,11 +121,11 @@ jobs:
           FAILED=0
           while IFS= read -r contract_id; do
             echo "Extending TTL for contract: ${contract_id}"
-            stellar contract extend-ttl \
+            stellar contract extend \
               --id "$contract_id" \
               --source extender \
               --network "$NETWORK" \
-              --ledgers-to-expire 2000000 || {
+              --ledgers-to-extend 2000000 || {
               echo "::warning::Failed to extend TTL for ${contract_id}"
               FAILED=$((FAILED + 1))
             }
