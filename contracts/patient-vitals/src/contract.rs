@@ -136,20 +136,26 @@ impl PatientVitalsContract {
         env: Env,
         patient_id: Address,
         device_id: String,
+        device_address: Address,
         device_type: Symbol,
         serial_number: String,
         calibration_date: u64,
     ) -> Result<(), Error> {
         patient_id.require_auth();
 
-        let key = DataKey::DeviceReg(patient_id, device_id);
+        let key = DataKey::DeviceReg(patient_id.clone(), device_id);
         let reg = DeviceRegistration {
             device_type,
             serial_number,
             calibration_date,
         };
-
         env.storage().persistent().set(&key, &reg);
+
+        // Record the reverse mapping so trigger_vital_alert can verify a device address.
+        env.storage()
+            .persistent()
+            .set(&DataKey::DeviceAddress(patient_id, device_address), &true);
+
         Ok(())
     }
 
@@ -191,16 +197,53 @@ impl PatientVitalsContract {
 
     pub fn trigger_vital_alert(
         env: Env,
+        caller: Address,
         patient_id: Address,
         vital_type: Symbol,
         value: String,
         severity: Symbol,
         alert_time: u64,
     ) -> Result<(), Error> {
-        // Can be called by a monitoring service or device with auth
-        // To simplify, we ensure patient_id gives auth or anyone can if it's an emergency alert
-        // Let's require patient auth or some configured admin
-        patient_id.require_auth();
+        // Require auth from whichever actor is asserting the alert.
+        caller.require_auth();
+
+        // Authorization check: caller must be one of –
+        //   1. the patient themselves,
+        //   2. an authorized provider (has MonitoringParameters for this vital type), or
+        //   3. a registered monitoring device belonging to the patient
+        //      (device IDs are Strings, but the device owner is the patient and the
+        //       device address is the caller that registered via register_monitoring_device;
+        //       we model this as: a DeviceReg entry exists for the (patient, device_id)
+        //       where the device registered itself as caller).
+        //
+        // For devices: since DeviceReg is keyed by (patient_id, device_id: String) and
+        // device_id is an opaque String, we check if a MonitoringParams entry exists for
+        // the caller as provider (covers case 2) OR caller == patient (case 1).
+        // Case 3 is covered by checking for a DeviceReg entry keyed to the caller's
+        // address converted to a canonical String — devices register themselves under
+        // their own address string via register_monitoring_device.
+        let is_patient = caller == patient_id;
+        let is_provider = env
+            .storage()
+            .persistent()
+            .get::<_, MonitoringParameters>(&DataKey::MonitoringParams(
+                patient_id.clone(),
+                vital_type.clone(),
+            ))
+            .map(|p| p.provider_id == caller)
+            .unwrap_or(false);
+
+        // Check device registration: use the DeviceAddress reverse-mapping written by
+        // register_monitoring_device to verify that caller is a registered device
+        // for this patient.
+        let is_device = env
+            .storage()
+            .persistent()
+            .has(&DataKey::DeviceAddress(patient_id.clone(), caller.clone()));
+
+        if !is_patient && !is_provider && !is_device {
+            return Err(Error::Unauthorized);
+        }
 
         let key = DataKey::VitalsAlerts(patient_id.clone(), vital_type);
         let mut alerts: Vec<VitalAlert> = env
@@ -221,13 +264,22 @@ impl PatientVitalsContract {
 
     pub fn get_vital_trends(
         env: Env,
+        requester: Address,
         patient_id: Address,
         _vital_type: Symbol, // In a real system, you'd filter by this
         start_date: u64,
         end_date: u64,
     ) -> Result<Vec<VitalReading>, Error> {
-        // No auth strict needed if public view, but let's assume public getter
-        // that's protected by off-chain or wrapper contract
+        requester.require_auth();
+
+        // Authorization: requester must be the patient or an authorized provider
+        // (i.e., holds a MonitoringParameters entry for any vital type of this patient).
+        if requester != patient_id
+            && !Self::is_authorized_provider(&env, &patient_id, &requester)
+        {
+            return Err(Error::Unauthorized);
+        }
+
         let key = DataKey::VitalsHistory(patient_id);
         let history: Vec<VitalReading> = env
             .storage()
@@ -247,10 +299,20 @@ impl PatientVitalsContract {
 
     pub fn calculate_vital_statistics(
         env: Env,
+        requester: Address,
         patient_id: Address,
         vital_type: Symbol,
         period: u64,
     ) -> Result<VitalStatistics, Error> {
+        requester.require_auth();
+
+        // Authorization: requester must be the patient or an authorized provider.
+        if requester != patient_id
+            && !Self::is_authorized_provider(&env, &patient_id, &requester)
+        {
+            return Err(Error::Unauthorized);
+        }
+
         // Filter by period (e.g. recent `period` seconds from now)
         // Since we don't know "now", we assume `period` is the start_date for statistics calculation.
         let key = DataKey::VitalsHistory(patient_id);
@@ -297,6 +359,36 @@ impl PatientVitalsContract {
             average_value: sum / valid_count,
             count: valid_count,
         })
+    }
+
+    /// Check whether `provider` holds a `MonitoringParameters` entry for *any*
+    /// vital type belonging to `patient_id`. This is the contract-local definition
+    /// of "authorized provider": whoever a patient's provider set monitoring
+    /// parameters for is considered authorized to read that patient's vitals.
+    fn is_authorized_provider(env: &Env, patient_id: &Address, provider: &Address) -> bool {
+        let vital_types = [
+            Symbol::new(env, "heart_rate"),
+            Symbol::new(env, "bp_systolic"),
+            Symbol::new(env, "bp_diastolic"),
+            Symbol::new(env, "temperature"),
+            Symbol::new(env, "respiratory"),
+            Symbol::new(env, "oxygen_sat"),
+            Symbol::new(env, "blood_glucose"),
+            Symbol::new(env, "weight"),
+        ];
+        for vt in vital_types.iter() {
+            let key = DataKey::MonitoringParams(patient_id.clone(), vt.clone());
+            if let Some(params) = env
+                .storage()
+                .persistent()
+                .get::<_, MonitoringParameters>(&key)
+            {
+                if &params.provider_id == provider {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Evaluate all configured monitoring parameters for a patient against the
@@ -524,11 +616,21 @@ impl PatientVitalsContract {
     /// Retrieve all alerts for a patient's specific vital type.
     pub fn get_alerts(
         env: Env,
+        requester: Address,
         patient_id: Address,
         vital_type: Symbol,
-    ) -> Vec<VitalAlert> {
+    ) -> Result<Vec<VitalAlert>, Error> {
+        requester.require_auth();
+
+        // Authorization: requester must be the patient or an authorized provider.
+        if requester != patient_id
+            && !Self::is_authorized_provider(&env, &patient_id, &requester)
+        {
+            return Err(Error::Unauthorized);
+        }
+
         let key = DataKey::VitalsAlerts(patient_id, vital_type);
-        env.storage().persistent().get(&key).unwrap_or(Vec::new(&env))
+        Ok(env.storage().persistent().get(&key).unwrap_or(Vec::new(&env)))
     }
 
     /// Remove all vitals state for a deregistered patient.
