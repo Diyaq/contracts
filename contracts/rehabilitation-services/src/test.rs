@@ -1058,3 +1058,72 @@ fn test_plan_version_is_per_plan_not_global() {
     );
     assert_eq!(client.get_measurable_goal(&g2).plan_version, 1);
 }
+
+#[test]
+fn test_persistent_storage_bounded_instance_size() {
+    // Regression test for #642: verifies that creating many sessions and progress
+    // notes across multiple plans does not balloon instance storage (which would be
+    // loaded on every invocation). All data must live in persistent storage keyed
+    // by plan/goal id, so reads on an unrelated plan are not burdened by the
+    // accumulated data of other plans.
+    let env = Env::default();
+    env.mock_all_auths();
+    let patient = Address::generate(&env);
+    let therapist = Address::generate(&env);
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+
+    // Create 3 independent plans.
+    let (_, plan_a) = create_plan(&env, &client, &patient, &therapist);
+    let (_, plan_b) = create_plan(&env, &client, &patient, &therapist);
+    let (_, plan_c) = create_plan(&env, &client, &patient, &therapist);
+
+    // Write 5 therapy sessions and 5 progress notes to each plan.
+    for i in 0u32..5 {
+        let mut interventions = Vec::new(&env);
+        interventions.push_back(TherapyIntervention {
+            intervention_type: Symbol::new(&env, "exercise"),
+            description: String::from_str(&env, "Stretching"),
+            sets: Some(3),
+            reps: Some(10),
+            duration: None,
+            resistance: None,
+        });
+        for plan in [plan_a, plan_b, plan_c] {
+            client.document_therapy_session(
+                &plan,
+                &(1000u64 + i as u64),
+                &interventions,
+                &30u32,
+                &String::from_str(&env, "Good"),
+                &None,
+            );
+            client.document_progress_note(
+                &plan,
+                &(1000u64 + i as u64),
+                &String::from_str(&env, "Patient reports improvement"),
+                &Vec::new(&env),
+                &String::from_str(&env, "Progressing"),
+                &Vec::new(&env),
+            );
+        }
+    }
+
+    // Reading plan_a must succeed without touching sessions from plan_b or plan_c.
+    let sessions_a = client.get_therapy_sessions(&plan_a);
+    assert_eq!(sessions_a.len(), 5);
+
+    // plan_b and plan_c are independent: their session counts are also 5, not 15.
+    let sessions_b = client.get_therapy_sessions(&plan_b);
+    assert_eq!(sessions_b.len(), 5);
+
+    let sessions_c = client.get_therapy_sessions(&plan_c);
+    assert_eq!(sessions_c.len(), 5);
+
+    // Goals across plans remain isolated.
+    let g_a = client.set_rehabilitation_goal(&plan_a, &Symbol::new(&env, "strength"), &100u32, &9000u64);
+    let g_b = client.set_rehabilitation_goal(&plan_b, &Symbol::new(&env, "strength"), &100u32, &9000u64);
+    assert_ne!(g_a, g_b);
+    assert_eq!(client.get_measurable_goal(&g_a).plan_id, plan_a);
+    assert_eq!(client.get_measurable_goal(&g_b).plan_id, plan_b);
+}

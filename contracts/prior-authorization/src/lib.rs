@@ -33,7 +33,7 @@ mod test;
 #[cfg(test)]
 mod test_enhanced;
 
-use soroban_sdk::{contract, contractclient, contractimpl, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Symbol, Vec};
+use soroban_sdk::{contract, contractclient, contractimpl, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 use storage::*;
 use types::*;
 use shared::temporal;

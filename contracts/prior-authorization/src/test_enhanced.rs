@@ -51,7 +51,7 @@ fn setup() -> (Env, Address, Address, Address) {
     (env, insurer, provider, patient)
 }
 
-fn make_contract(env: &Env, insurer: &Address) -> PriorAuthorizationContractClient {
+fn make_contract<'a>(env: &'a Env, insurer: &Address) -> PriorAuthorizationContractClient<'a> {
     let ir_id = setup_insurer_registry(env, insurer);
     let contract_id = env.register(PriorAuthorizationContract, ());
     let client = PriorAuthorizationContractClient::new(env, &contract_id);
