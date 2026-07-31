@@ -61,6 +61,8 @@ pub enum DataKey {
     VitalsHistory(Address),            // map to Vec<VitalReading>
     MonitoringParams(Address, Symbol), // map to MonitoringParameters
     DeviceReg(Address, String),        // map to DeviceRegistration
+    /// Reverse mapping: (patient_id, device_address) → () — used for trigger_vital_alert auth.
+    DeviceAddress(Address, Address),
     VitalsAlerts(Address, Symbol),     // map to Vec<VitalAlert>
     /// Raw readings bucketed by hour window index
     RawWindow(Address, u64),

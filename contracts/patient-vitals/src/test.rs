@@ -30,8 +30,20 @@ fn test_record_vital_signs() {
     let result = client.record_vital_signs(&patient_id, &provider_id, &1672531200, &vitals);
     assert_eq!(result, 1);
 
-    // Test get trends
+    // Provider must be authorized for the patient to read trends.
+    // Set monitoring params so provider_id is recognized as authorized.
+    client.set_monitoring_parameters(
+        &patient_id,
+        &provider_id,
+        &Symbol::new(&env, "heart_rate"),
+        &Range { min: 60, max: 100 },
+        &AlertThresholds { critical_low: None, low: None, high: None, critical_high: None },
+        &3600,
+    );
+
+    // Patient reads their own trends.
     let trends = client.get_vital_trends(
+        &patient_id,
         &patient_id,
         &Symbol::new(&env, "heart_rate"),
         &1672531100,
@@ -39,6 +51,16 @@ fn test_record_vital_signs() {
     );
     assert_eq!(trends.len(), 1);
     assert_eq!(trends.get(0).unwrap().vitals.heart_rate, Some(72));
+
+    // Authorized provider can also read.
+    let trends_provider = client.get_vital_trends(
+        &provider_id,
+        &patient_id,
+        &Symbol::new(&env, "heart_rate"),
+        &1672531100,
+        &1672531300,
+    );
+    assert_eq!(trends_provider.len(), 1);
 }
 
 #[test]
@@ -80,10 +102,12 @@ fn test_device_registration_and_reading() {
 
     let patient_id = Address::generate(&env);
     let device_id = String::from_str(&env, "DEVICE_123");
+    let device_address = Address::generate(&env);
 
     client.register_monitoring_device(
         &patient_id,
         &device_id,
+        &device_address,
         &Symbol::new(&env, "watch"),
         &String::from_str(&env, "SN-456"),
         &1670000000,
@@ -108,7 +132,7 @@ fn test_device_registration_and_reading() {
 
     // Verify trends to see the reading was added
     let trends =
-        client.get_vital_trends(&patient_id, &Symbol::new(&env, "heart_rate"), &0, &u64::MAX);
+        client.get_vital_trends(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"), &0, &u64::MAX);
     assert_eq!(trends.len(), 1);
     assert_eq!(trends.get(0).unwrap().vitals.heart_rate, Some(75));
 }
@@ -123,7 +147,9 @@ fn test_trigger_vital_alert() {
 
     let patient_id = Address::generate(&env);
 
+    // Patient triggers their own alert.
     client.trigger_vital_alert(
+        &patient_id,
         &patient_id,
         &Symbol::new(&env, "heart_rate"),
         &String::from_str(&env, "135"),
@@ -164,7 +190,7 @@ fn test_calculate_vital_statistics() {
 
     // Test stats calculating heart rate from time 1500
     let stats =
-        client.calculate_vital_statistics(&patient_id, &Symbol::new(&env, "heart_rate"), &1500);
+        client.calculate_vital_statistics(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"), &1500);
     assert_eq!(stats.count, 2);
     assert_eq!(stats.min_value, 80);
     assert_eq!(stats.max_value, 90);
@@ -214,7 +240,7 @@ fn test_threshold_breach_creates_alert() {
     };
     client.record_vital_signs(&patient_id, &Address::generate(&env), &1_000_000, &vitals);
 
-    let alerts = client.get_alerts(&patient_id, &Symbol::new(&env, "heart_rate"));
+    let alerts = client.get_alerts(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"));
     assert_eq!(alerts.len(), 1);
     assert_eq!(alerts.get(0).unwrap().severity, Symbol::new(&env, "high"));
     assert_eq!(alerts.get(0).unwrap().alert_time, 1_000_000);
@@ -244,7 +270,7 @@ fn test_critical_threshold_severity() {
     };
     client.record_vital_signs(&patient_id, &Address::generate(&env), &2_000_000, &vitals);
 
-    let alerts = client.get_alerts(&patient_id, &Symbol::new(&env, "heart_rate"));
+    let alerts = client.get_alerts(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"));
     assert_eq!(alerts.len(), 1);
     assert_eq!(alerts.get(0).unwrap().severity, Symbol::new(&env, "critical_hi"));
 }
@@ -272,7 +298,7 @@ fn test_normal_reading_no_alert() {
     };
     client.record_vital_signs(&patient_id, &Address::generate(&env), &3_000_000, &vitals);
 
-    let alerts = client.get_alerts(&patient_id, &Symbol::new(&env, "heart_rate"));
+    let alerts = client.get_alerts(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"));
     assert_eq!(alerts.len(), 0);
 }
 
@@ -305,7 +331,7 @@ fn test_cooldown_suppresses_duplicate_alert() {
     let t1 = t0 + ALERT_COOLDOWN_SECONDS - 1;
     client.record_vital_signs(&patient_id, &Address::generate(&env), &t1, &vitals);
 
-    let alerts = client.get_alerts(&patient_id, &Symbol::new(&env, "heart_rate"));
+    let alerts = client.get_alerts(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"));
     assert_eq!(alerts.len(), 1, "duplicate alert within cooldown must be suppressed");
 }
 
@@ -336,7 +362,7 @@ fn test_alert_after_cooldown_expires() {
     let t1 = t0 + ALERT_COOLDOWN_SECONDS;
     client.record_vital_signs(&patient_id, &Address::generate(&env), &t1, &vitals);
 
-    let alerts = client.get_alerts(&patient_id, &Symbol::new(&env, "heart_rate"));
+    let alerts = client.get_alerts(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"));
     assert_eq!(alerts.len(), 2, "new alert must be created after cooldown expires");
     assert_eq!(alerts.get(1).unwrap().alert_time, t1);
 }
@@ -460,6 +486,7 @@ fn test_deregister_patient_clears_vitals_history() {
     // History exists before deregistration
     let trends = client.get_vital_trends(
         &patient_id,
+        &patient_id,
         &Symbol::new(&env, "heart_rate"),
         &0u64,
         &u64::MAX,
@@ -470,6 +497,7 @@ fn test_deregister_patient_clears_vitals_history() {
 
     // History cleared after deregistration
     let trends_after = client.get_vital_trends(
+        &patient_id,
         &patient_id,
         &Symbol::new(&env, "heart_rate"),
         &0u64,
@@ -491,15 +519,297 @@ fn test_deregister_patient_clears_alerts() {
 
     client.trigger_vital_alert(
         &patient_id,
+        &patient_id,
         &vital_type,
         &String::from_str(&env, "150"),
         &Symbol::new(&env, "high"),
         &1_000_000u64,
     );
 
-    assert_eq!(client.get_alerts(&patient_id, &vital_type).len(), 1);
+    assert_eq!(client.get_alerts(&patient_id, &patient_id, &vital_type).len(), 1);
 
     client.deregister_patient(&patient_id);
 
-    assert_eq!(client.get_alerts(&patient_id, &vital_type).len(), 0);
+    assert_eq!(client.get_alerts(&patient_id, &patient_id, &vital_type).len(), 0);
+}
+
+// ── #614: access control for read-only PHI functions ─────────────────────────
+
+/// An unrelated address must not be able to read another patient's vital trends.
+#[test]
+fn test_unauthorized_address_cannot_read_vital_trends() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    // Record a vital so there is data to attempt to read.
+    let vitals = VitalSigns {
+        heart_rate: Some(80),
+        blood_pressure_systolic: None,
+        blood_pressure_diastolic: None,
+        temperature: None,
+        respiratory_rate: None,
+        oxygen_saturation: None,
+        blood_glucose: None,
+        weight: None,
+    };
+    client.record_vital_signs(&patient_id, &provider_id, &1_000_000, &vitals);
+
+    // Stranger is not the patient and has no MonitoringParameters entry → Unauthorized.
+    let result = client.try_get_vital_trends(
+        &stranger,
+        &patient_id,
+        &Symbol::new(&env, "heart_rate"),
+        &0,
+        &u64::MAX,
+    );
+    assert!(result.is_err(), "stranger must not read another patient's vital trends");
+}
+
+/// An unrelated address must not be able to read another patient's vital statistics.
+#[test]
+fn test_unauthorized_address_cannot_read_vital_statistics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    let vitals = VitalSigns {
+        heart_rate: Some(80),
+        blood_pressure_systolic: None,
+        blood_pressure_diastolic: None,
+        temperature: None,
+        respiratory_rate: None,
+        oxygen_saturation: None,
+        blood_glucose: None,
+        weight: None,
+    };
+    client.record_vital_signs(&patient_id, &provider_id, &1_000_000, &vitals);
+
+    let result = client.try_calculate_vital_statistics(
+        &stranger,
+        &patient_id,
+        &Symbol::new(&env, "heart_rate"),
+        &0,
+    );
+    assert!(result.is_err(), "stranger must not read another patient's vital statistics");
+}
+
+/// An unrelated address must not be able to read another patient's alerts.
+#[test]
+fn test_unauthorized_address_cannot_read_alerts() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    // Give patient a threshold breach so alerts exist.
+    setup_heart_rate_thresholds(&client, &patient_id, &env);
+    let vitals = VitalSigns {
+        heart_rate: Some(120),
+        blood_pressure_systolic: None,
+        blood_pressure_diastolic: None,
+        temperature: None,
+        respiratory_rate: None,
+        oxygen_saturation: None,
+        blood_glucose: None,
+        weight: None,
+    };
+    client.record_vital_signs(&patient_id, &Address::generate(&env), &1_000_000, &vitals);
+
+    let result = client.try_get_alerts(
+        &stranger,
+        &patient_id,
+        &Symbol::new(&env, "heart_rate"),
+    );
+    assert!(result.is_err(), "stranger must not read another patient's alerts");
+}
+
+/// An authorized provider (has MonitoringParameters for the patient) CAN read alerts.
+#[test]
+fn test_authorized_provider_can_read_alerts() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+
+    // Register provider by setting monitoring params.
+    client.set_monitoring_parameters(
+        &patient_id,
+        &provider_id,
+        &Symbol::new(&env, "heart_rate"),
+        &Range { min: 60, max: 100 },
+        &AlertThresholds {
+            critical_low: Some(40),
+            low: Some(50),
+            high: Some(110),
+            critical_high: Some(130),
+        },
+        &3600,
+    );
+
+    // Breach the threshold.
+    let vitals = VitalSigns {
+        heart_rate: Some(120),
+        blood_pressure_systolic: None,
+        blood_pressure_diastolic: None,
+        temperature: None,
+        respiratory_rate: None,
+        oxygen_saturation: None,
+        blood_glucose: None,
+        weight: None,
+    };
+    client.record_vital_signs(&patient_id, &provider_id, &1_000_000, &vitals);
+
+    // Provider can read alerts.
+    let alerts = client.get_alerts(&provider_id, &patient_id, &Symbol::new(&env, "heart_rate"));
+    assert_eq!(alerts.len(), 1, "authorized provider must be able to read patient alerts");
+}
+
+// ── #615: trigger_vital_alert authorization ───────────────────────────────────
+
+/// A provider with MonitoringParameters for the patient can trigger an alert
+/// on that patient's behalf.
+#[test]
+fn test_provider_can_trigger_vital_alert() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    let vital_type = Symbol::new(&env, "heart_rate");
+
+    // Authorize provider by recording monitoring params.
+    client.set_monitoring_parameters(
+        &patient_id,
+        &provider_id,
+        &vital_type,
+        &Range { min: 60, max: 100 },
+        &AlertThresholds { critical_low: None, low: None, high: None, critical_high: None },
+        &3600,
+    );
+
+    // Provider triggers an emergency alert on behalf of the patient.
+    client.trigger_vital_alert(
+        &provider_id,
+        &patient_id,
+        &vital_type,
+        &String::from_str(&env, "200"),
+        &Symbol::new(&env, "critical_hi"),
+        &2_000_000,
+    );
+
+    let alerts = client.get_alerts(&provider_id, &patient_id, &vital_type);
+    assert_eq!(alerts.len(), 1, "provider-triggered alert must be recorded");
+    assert_eq!(alerts.get(0).unwrap().severity, Symbol::new(&env, "critical_hi"));
+}
+
+/// An unrelated third party must not be able to trigger an alert for a patient.
+#[test]
+fn test_third_party_cannot_trigger_vital_alert() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let vital_type = Symbol::new(&env, "heart_rate");
+
+    // No MonitoringParameters set for stranger → not an authorized provider.
+    let result = client.try_trigger_vital_alert(
+        &stranger,
+        &patient_id,
+        &vital_type,
+        &String::from_str(&env, "200"),
+        &Symbol::new(&env, "critical_hi"),
+        &2_000_000,
+    );
+    assert!(result.is_err(), "third party must not trigger a vital alert");
+}
+
+/// A registered monitoring device can trigger an emergency alert on a patient's behalf.
+#[test]
+fn test_device_can_trigger_vital_alert() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let device_address = Address::generate(&env);
+    let vital_type = Symbol::new(&env, "heart_rate");
+
+    // Register the device for this patient.
+    client.register_monitoring_device(
+        &patient_id,
+        &String::from_str(&env, "WATCH_001"),
+        &device_address,
+        &Symbol::new(&env, "watch"),
+        &String::from_str(&env, "SN-001"),
+        &1_000_000,
+    );
+
+    // Device triggers an emergency alert.
+    client.trigger_vital_alert(
+        &device_address,
+        &patient_id,
+        &vital_type,
+        &String::from_str(&env, "185"),
+        &Symbol::new(&env, "critical_hi"),
+        &4_000_000,
+    );
+
+    let alerts = client.get_alerts(&patient_id, &patient_id, &vital_type);
+    assert_eq!(alerts.len(), 1, "device-triggered alert must be recorded");
+    assert_eq!(alerts.get(0).unwrap().severity, Symbol::new(&env, "critical_hi"));
+}
+
+/// The patient can still trigger their own alert (backward-compatible).
+#[test]
+fn test_patient_can_trigger_own_vital_alert() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let vital_type = Symbol::new(&env, "heart_rate");
+
+    client.trigger_vital_alert(
+        &patient_id,
+        &patient_id,
+        &vital_type,
+        &String::from_str(&env, "150"),
+        &Symbol::new(&env, "high"),
+        &3_000_000,
+    );
+
+    let alerts = client.get_alerts(&patient_id, &patient_id, &vital_type);
+    assert_eq!(alerts.len(), 1, "patient must be able to trigger their own alert");
 }
