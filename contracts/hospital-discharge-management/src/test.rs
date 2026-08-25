@@ -445,6 +445,29 @@ fn test_full_discharge_workflow() {
 }
 
 #[test]
+fn test_initialize_then_discharge_planning() {
+    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
+    let contract_id = env.register(HospitalDischargeContract, ());
+    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+
+    // Initialize the contract with the hospital registry
+    client.initialize(&admin);
+
+    // Verify initialize succeeded by running a state-mutating call
+    let plan_id = client.initiate_discharge_planning(
+        &admin,
+        &patient_id,
+        &hospital_id,
+        &1000u64,
+        &2000u64,
+    );
+
+    assert_eq!(plan_id, 1);
+    let plan = client.get_discharge_plan(&plan_id);
+    assert_eq!(plan.patient_id, patient_id);
+}
+
+#[test]
 fn test_complete_discharge_unauthorized() {
     let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
     let contract_id = env.register(HospitalDischargeContract, ());
