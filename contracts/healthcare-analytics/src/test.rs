@@ -797,7 +797,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &50,
         &DegradationPolicy::Fail,
     ).unwrap().unwrap().job_id;
-    client.execute_next_report();
+    client.execute_next_report(&admin).unwrap();
     client.complete_report(&job1, &400, &50);
 
     // Second job: another 400 CPU — still below threshold (total 800, not > 800)
@@ -809,7 +809,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &50,
         &DegradationPolicy::Fail,
     ).unwrap().unwrap().job_id;
-    client.execute_next_report();
+    client.execute_next_report(&admin).unwrap();
     client.complete_report(&job2, &400, &50);
 
     // Now TotalCpuUsed = 800; 800*100/1000 = 80, which is NOT > 80, so one more is still ok.
@@ -822,7 +822,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &1,
         &DegradationPolicy::Fail,
     ).unwrap().unwrap().job_id;
-    client.execute_next_report();
+    client.execute_next_report(&admin).unwrap();
     client.complete_report(&job3, &1, &1);
 
     // TotalCpuUsed = 801; 801*100/1000 = 80 (integer), still not > 80.
@@ -835,7 +835,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &1,
         &DegradationPolicy::Fail,
     ).unwrap().unwrap().job_id;
-    client.execute_next_report();
+    client.execute_next_report(&admin).unwrap();
     client.complete_report(&job4, &100, &1);
 
     // TotalCpuUsed = 901; 901*100/1000 = 90 > 80 → throttled
@@ -852,7 +852,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
 
 #[test]
 fn test_cancel_report_queued() {
-    let (env, client, _admin) = setup_with_admin();
+    let (env, client, admin) = setup_with_admin();
     let requester = Address::generate(&env);
 
     let accepted = client
@@ -880,13 +880,13 @@ fn test_cancel_report_queued() {
     assert_eq!(err_not_found, Err(Ok(Error::JobNotFound)));
 
     // Cancelled job ID cannot be re-executed
-    let next_job = client.execute_next_report();
-    assert_eq!(next_job, None);
+    let next_job = client.execute_next_report(&admin);
+    assert_eq!(next_job, Ok(None));
 }
 
 #[test]
 fn test_cancel_report_executing() {
-    let (env, client, _admin) = setup_with_admin();
+    let (env, client, admin) = setup_with_admin();
     let requester = Address::generate(&env);
 
     let accepted = client
@@ -902,12 +902,57 @@ fn test_cancel_report_executing() {
     let job_id = accepted.job_id;
 
     // Start executing the job
-    let executed_id = client.execute_next_report().unwrap();
+    let executed_id = client.execute_next_report(&admin).unwrap().unwrap();
     assert_eq!(executed_id, job_id);
 
     // Executing job cancellation returns Error::JobAlreadyExecuting
     let err_executing = client.try_cancel_report(&requester, &job_id);
     assert_eq!(err_executing, Err(Ok(Error::JobAlreadyExecuting)));
+}
+
+// ========================
+// execute_next_report auth tests
+// ========================
+
+#[test]
+fn test_execute_next_report_requires_admin_auth() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    // Queue a report
+    client.request_report(
+        &requester,
+        &String::from_str(&env, "quality_metrics"),
+        &shared::resource_management::JobPriority::Normal,
+        &500_000,
+        &50_000,
+        &DegradationPolicy::Fail,
+    );
+
+    // Non-admin call should be rejected
+    let non_admin = Address::generate(&env);
+    let result = client.try_execute_next_report(&non_admin);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_execute_next_report_admin_succeeds() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    // Queue a report
+    let accepted = client.request_report(
+        &requester,
+        &String::from_str(&env, "quality_metrics"),
+        &shared::resource_management::JobPriority::Normal,
+        &500_000,
+        &50_000,
+        &DegradationPolicy::Fail,
+    );
+
+    // Admin call should succeed and return the job_id
+    let result = client.execute_next_report(&admin);
+    assert_eq!(result, Ok(Some(accepted.job_id)));
 }
 
 // ========================

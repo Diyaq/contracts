@@ -368,16 +368,26 @@ impl HealthcareAnalytics {
 
     /// Execute next available report job (respects resource limits)
     /// Returns job_id if a job was started, or None if queue empty or resources exhausted
-    pub fn execute_next_report(env: Env) -> Option<u64> {
-        // Admin-only operation
+    /// Admin-only operation
+    pub fn execute_next_report(env: Env, admin: Address) -> Result<Option<u64>, Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+
         if let Some(job_id) = get_next_job_for_execution(&env) {
             // Start execution (in real implementation, this would spawn background job)
             let _ = shared::resource_management::start_job(&env, job_id);
             env.events()
                 .publish((symbol_short!("exec_job"), job_id), symbol_short!("started"));
-            Some(job_id)
+            Ok(Some(job_id))
         } else {
-            None
+            Ok(None)
         }
     }
 
