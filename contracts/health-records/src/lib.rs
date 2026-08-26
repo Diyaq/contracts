@@ -141,6 +141,23 @@ fn index_record_by_category(env: &Env, category: RecordCategory, record_id: u64)
     env.storage().persistent().set(&key, &ids);
 }
 
+fn remove_record_from_category_index(env: &Env, category: RecordCategory, record_id: u64) {
+    let key = DataKey::CategoryIndex(category);
+    if let Some(ids) = env.storage().persistent().get::<DataKey, Vec<u64>>(&key) {
+        let mut filtered = Vec::new(env);
+        for id in ids.iter() {
+            if id != record_id {
+                filtered.push_back(id);
+            }
+        }
+        if filtered.is_empty() {
+            env.storage().persistent().remove(&key);
+        } else {
+            env.storage().persistent().set(&key, &filtered);
+        }
+    }
+}
+
 fn compute_hash(
     env: &Env,
     record_id: u64,
@@ -551,11 +568,9 @@ impl HealthRecords {
             timestamp,
         );
 
-        // Note: this only adds the record to the new category's index; it
-        // doesn't remove it from the old one (Soroban's Vec has no O(1)
-        // remove-by-value), so a record that changes category will appear
-        // under both until/unless that's addressed separately.
+        // When category changes, remove from old index and add to new index.
         if new_record_category != record.record_category {
+            remove_record_from_category_index(&env, record.record_category, record_id);
             index_record_by_category(&env, new_record_category, record_id);
         }
 
