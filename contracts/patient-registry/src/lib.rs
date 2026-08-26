@@ -2700,8 +2700,8 @@ impl MedicalRegistry {
     //                  PRIVATE HELPERS
     // =====================================================
 
-    /// Returns true if the provider-registry is not configured, or if the address
-    /// is a registered and active provider in the configured registry.
+    /// Returns false if the provider-registry is not configured (fail-closed default).
+    /// Otherwise, returns true if the address is a registered and active provider in the configured registry.
     fn is_provider_registered(env: &Env, provider: &Address) -> bool {
         let registry: Address = match env
             .storage()
@@ -2709,7 +2709,7 @@ impl MedicalRegistry {
             .get::<DataKey, Address>(&DataKey::ProviderRegistry)
         {
             Some(r) => r,
-            None => return true,
+            None => return false,
         };
         let args: Vec<soroban_sdk::Val> = vec![env, provider.clone().into_val(env)];
         env.invoke_contract(&registry, &Symbol::new(env, "is_provider"), args)

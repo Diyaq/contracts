@@ -4292,6 +4292,40 @@ fn test_grant_access_allows_registered_provider() {
     assert_eq!(authorized.len(), 1);
 }
 
+#[test]
+fn test_grant_access_fails_when_registry_not_configured() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
+
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+    client.initialize(&admin, &treasury, &fee_token);
+
+    let patient = Address::generate(&env);
+    client.register_patient(
+        &patient,
+        &String::from_str(&env, "Test Patient"),
+        &631152000u64,
+        &encrypted_ref(&env, 5),
+        &policy(&env),
+    );
+
+    let v1 = BytesN::from_array(&env, &[1u8; 32]);
+    client.publish_consent_version(&v1);
+    client.acknowledge_consent(&patient, &patient, &v1);
+
+    let doctor = Address::generate(&env);
+    let result = client.try_grant_access(&patient, &patient, &doctor);
+    assert!(
+        result.is_err(),
+        "grant_access should reject any doctor when provider registry is not configured"
+    );
+}
+
 // ─── Guardian / proxy registration tests (#466) ──────────────────────────────
 
 #[test]
