@@ -537,6 +537,10 @@ impl HealthcareAnalytics {
             return Err(Error::InvalidThreshold);
         }
 
+        if cpu_budget == 0 || memory_budget == 0 {
+            return Err(Error::InvalidValue);
+        }
+
         set_system_limits(
             &env,
             shared::resource_management::SystemResourceLimits {

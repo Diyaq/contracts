@@ -956,6 +956,65 @@ fn test_execute_next_report_admin_succeeds() {
 }
 
 // ========================
+// set_resource_limits tests
+// ========================
+
+#[test]
+fn test_set_resource_limits_rejects_zero_cpu_budget() {
+    let (env, client, admin) = setup_with_admin();
+
+    let result = client.try_set_resource_limits(&admin, &0, &1_000_000, &5, &80);
+    assert_eq!(result, Err(Ok(Error::InvalidValue)));
+}
+
+#[test]
+fn test_set_resource_limits_rejects_zero_memory_budget() {
+    let (env, client, admin) = setup_with_admin();
+
+    let result = client.try_set_resource_limits(&admin, &1_000_000, &0, &5, &80);
+    assert_eq!(result, Err(Ok(Error::InvalidValue)));
+}
+
+#[test]
+fn test_set_resource_limits_rejects_both_zero() {
+    let (env, client, admin) = setup_with_admin();
+
+    let result = client.try_set_resource_limits(&admin, &0, &0, &5, &80);
+    assert_eq!(result, Err(Ok(Error::InvalidValue)));
+}
+
+#[test]
+fn test_set_resource_limits_accepts_nonzero_budgets() {
+    let (env, client, admin) = setup_with_admin();
+
+    let result = client.try_set_resource_limits(&admin, &1_000_000, &100_000, &5, &80);
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn test_request_report_throttle_check_no_panic_with_proper_budgets() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    // Set valid non-zero budgets
+    client.set_resource_limits(&admin, &10_000, &10_000, &5, &50);
+
+    // should_throttle_job is called internally; it should not panic
+    // because the budgets are guaranteed to be non-zero
+    let result = client.try_request_report(
+        &requester,
+        &String::from_str(&env, "quality_metrics"),
+        &JobPriority::Normal,
+        &100,
+        &100,
+        &DegradationPolicy::Fail,
+    );
+
+    // Should succeed, proving should_throttle_job didn't panic
+    assert!(result.is_ok());
+}
+
+// ========================
 // Admin rotation tests
 // ========================
 
