@@ -134,6 +134,7 @@ pub enum DataKey {
     QualityMetricCounter,
     QualityMetric(u64),
     QualityMetricsByProvider(Address),
+    AuthorizedProvider(Address),
     Admin,
     /// Stores the `ResultQuality` for a report job accepted under a degraded policy.
     JobResultQuality(u64),
@@ -678,16 +679,50 @@ impl HealthcareAnalytics {
             .remove(&DataKey::RequesterMemoryUsed(requester.clone()));
         Ok(())
     }
+
+    /// Register `provider` as an authorized analytics data recorder (admin only).
+    pub fn authorize_provider(env: Env, admin: Address, provider: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(Error::Unauthorized);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::AuthorizedProvider(provider), &true);
+
+        Ok(())
+    }
+
     /// Privacy is preserved by accepting only pre-anonymized, aggregate-ready
     /// values with an optional metadata hash instead of raw patient data.
+    ///
+    /// Restricted to authorized analytics providers: `recorder` must authenticate
+    /// via `require_auth()` and be registered through `authorize_provider`.
     pub fn record_metric(
         env: Env,
+        recorder: Address,
         metric_type: Symbol,
         value: i128,
         category: Symbol,
         timestamp: u64,
         metadata_hash: Option<BytesN<32>>,
     ) -> Result<(), Error> {
+        recorder.require_auth();
+        let authorized: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AuthorizedProvider(recorder))
+            .unwrap_or(false);
+        if !authorized {
+            return Err(Error::Unauthorized);
+        }
+
         let id = env
             .storage()
             .instance()
