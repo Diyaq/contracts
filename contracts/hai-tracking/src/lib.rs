@@ -897,4 +897,5 @@ impl HAITrackingContract {
     }
 }
 
+#[cfg(test)]
 mod test;

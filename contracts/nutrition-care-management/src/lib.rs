@@ -342,7 +342,7 @@ impl NutritionCareContract {
     /// One-time initialization of the contraindication admin.
     /// Fails if an admin has already been set; use `set_contraindication_admin`
     /// (called by the current admin) to rotate the admin afterwards.
-    pub fn initialize_contraindication_admin(env: Env, admin: Address) -> Result<(), Error> {
+    pub fn init_contraindication_admin(env: Env, admin: Address) -> Result<(), Error> {
         admin.require_auth();
         if env
             .storage()
