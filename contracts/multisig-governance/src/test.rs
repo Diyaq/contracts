@@ -669,3 +669,53 @@ fn test_abstain_counts_toward_quorum() {
     // All 3 voted (1 approval, 2 abstentions) → quorum met, threshold not met → Failed.
     assert_eq!(proposal.status, ProposalStatus::Failed);
 }
+
+// ── #783: Domain tag is off-chain-only replay protection ──────────────────────
+
+#[test]
+fn test_domain_tag_computed_from_action_id() {
+    let (env, signers, client) = setup_with_quorum(2, 1, 2);
+    let s0 = signers.get(0).unwrap();
+
+    let action_id = symbol_short!("test_act");
+    client.propose_multisig_action(&s0, &action_id, &payload(&env));
+
+    let proposal = client.get_proposal(&action_id);
+
+    // Verify domain_tag is derived from action_id (deterministic)
+    // Independently compute what the domain_tag should be
+    let expected_tag: BytesN<32> = {
+        let data: Bytes = action_id.clone().to_xdr(&env);
+        env.crypto().sha256(&data).into()
+    };
+
+    assert_eq!(proposal.domain_tag, expected_tag);
+}
+
+#[test]
+fn test_domain_tag_is_not_verified_on_chain() {
+    let (env, signers, client) = setup_with_quorum(2, 1, 2);
+    let s0 = signers.get(0).unwrap();
+    let s1 = signers.get(1).unwrap();
+
+    let action_id = symbol_short!("test_act");
+    client.propose_multisig_action(&s0, &action_id, &payload(&env));
+
+    let proposal = client.get_proposal(&action_id);
+    let stored_domain_tag = proposal.domain_tag.clone();
+
+    // Verify that approvals work regardless of domain_tag.
+    // If domain_tag was verified on-chain, a caller couldn't control it.
+    // Since domain_tag is off-chain-only and not a parameter, approval succeeds without any domain_tag input.
+    let result = client.try_approve_multisig_action(&s1, &action_id);
+    assert!(
+        result.is_ok(),
+        "Approval should succeed; domain_tag is off-chain-only (not verified on-chain)"
+    );
+
+    let updated = client.get_proposal(&action_id);
+    // Verify domain_tag remains unchanged and matches what was stored
+    assert_eq!(updated.domain_tag, stored_domain_tag);
+    // Verify approval was recorded
+    assert_eq!(updated.approvals.len(), 2);
+}
