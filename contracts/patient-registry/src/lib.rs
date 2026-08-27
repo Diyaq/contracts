@@ -563,7 +563,6 @@ impl MedicalRegistry {
         env.storage()
             .instance()
             .set(&DataKey::TotalAccessGrants, &0u64);
-        env.storage().instance().set(&DataKey::RecordCounter, &0u64);
         Ok(())
     }
 
@@ -1492,17 +1491,6 @@ impl MedicalRegistry {
 
         let timestamp = env.ledger().timestamp();
 
-        // Advance global monotonic record counter (instance storage).
-        let mut record_id: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::RecordCounter)
-            .unwrap_or(0u64);
-        record_id += 1;
-        env.storage()
-            .instance()
-            .set(&DataKey::RecordCounter, &record_id);
-
         let initial_version = RecordVersion {
             encrypted_ref: encrypted_ref.clone(),
             updated_by: doctor.clone(),
@@ -1522,11 +1510,15 @@ impl MedicalRegistry {
             policy: policy.clone(),
         };
 
+        // Advance global monotonic record counter (persistent storage as single source of truth).
         let counter_key = DataKey::RecordCounter;
-        let record_id: u64 = env.storage().persistent().get(&counter_key).unwrap_or(0u64) + 1;
+        let record_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&counter_key)
+            .unwrap_or(0u64)
+            + 1;
         env.storage().persistent().set(&counter_key, &record_id);
-
-        let timestamp = env.ledger().timestamp();
 
         let record = MedicalRecord {
             record_id,

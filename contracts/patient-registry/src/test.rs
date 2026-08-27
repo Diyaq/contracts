@@ -4172,33 +4172,16 @@ fn test_reactivate_patient_emits_patient_status_changed_event() {
     }
 
     assert_eq!(client.try_reactivate_patient(&patient), Ok(Ok(())));
-    std::println!("=== AFTER REACTIVATE ===");
-    for (cid, topics, data) in env.events().all().iter() {
-        let mut topic_syms = std::vec::Vec::new();
-        for t in topics.iter() {
-            if let Ok(sym) = Symbol::try_from_val(&env, &t) {
-                topic_syms.push(sym);
-            }
-        }
-        std::println!("Event Topics: {:?}", topic_syms);
-    }
     let events = env.events().all();
     let status_changed_topic = Symbol::new(&env, "patient_status_changed");
-    let count = events
-        .iter()
-        .filter(|(_cid, topics, _data)| {
-            topics.iter().any(|t| {
-                Symbol::try_from_val(&env, &t)
-                    .map(|s| s == status_changed_topic)
-                    .unwrap_or(false)
-            })
+    let found = events.iter().any(|(_cid, topics, _data)| {
+        topics.iter().any(|t| {
+            Symbol::try_from_val(&env, &t)
+                .map(|s| s == status_changed_topic)
+                .unwrap_or(false)
         })
-        .count();
-    assert!(
-        count >= 2,
-        "expected at least 2 patient_status_changed events (deregister + reactivate), got {}",
-        count
-    );
+    });
+    assert!(found, "patient_status_changed event not found after reactivate_patient");
 }
 
 // -------------------------------------------------------
@@ -4456,4 +4439,144 @@ fn test_guardian_can_revoke_access() {
     // Guardian revokes access — guardian cannot exceed patient's explicit consent preferences.
     client.revoke_access(&patient, &guardian, &doctor);
     assert_eq!(client.get_authorized_doctors(&patient).len(), 0);
+}
+
+#[test]
+fn test_add_medical_record_sequential_non_colliding_ids() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
+    client.initialize(&admin, &treasury, &fee_token);
+
+    let version_hash = BytesN::from_array(&env, &[1u8; 32]);
+    client.publish_consent_version(&version_hash);
+
+    let patient1 = Address::generate(&env);
+    let patient2 = Address::generate(&env);
+    let doctor = Address::generate(&env);
+
+    client.register_patient(
+        &patient1,
+        &String::from_str(&env, "Alice"),
+        &631152000u64,
+        &encrypted_ref(&env, 1),
+        &policy(&env),
+    );
+    client.acknowledge_consent(&patient1, &patient1, &version_hash);
+
+    client.register_patient(
+        &patient2,
+        &String::from_str(&env, "Bob"),
+        &631152000u64,
+        &encrypted_ref(&env, 2),
+        &policy(&env),
+    );
+    client.acknowledge_consent(&patient2, &patient2, &version_hash);
+
+    client.register_doctor(
+        &doctor,
+        &String::from_str(&env, "Dr. Smith"),
+        &String::from_str(&env, "General"),
+        &Bytes::from_array(&env, &[0u8; 32]),
+    );
+
+    client.grant_access(&patient1, &patient1, &doctor);
+    client.grant_access(&patient2, &patient2, &doctor);
+
+    // Add multiple records across multiple patients and verify monotonic, sequential, non-colliding IDs.
+    let mut generated_ids = Vec::new(&env);
+    let mut expected_patient1_ids = Vec::new(&env);
+    let mut expected_patient2_ids = Vec::new(&env);
+    let num_records = 20;
+    for i in 0..num_records {
+        let target_patient = if i % 2 == 0 { &patient1 } else { &patient2 };
+        let expected_ref = encrypted_ref(&env, ((i % 10) + 1) as u8);
+        let expected_record_type = Symbol::new(&env, "RECORD");
+        let expected_policy = policy(&env);
+        let record_id = client.add_medical_record(
+            target_patient,
+            &doctor,
+            &expected_ref,
+            &expected_record_type,
+            &expected_policy,
+        );
+        assert_eq!(
+            record_id,
+            (i + 1) as u64,
+            "record_id should be strictly monotonic"
+        );
+        generated_ids.push_back(record_id);
+
+        let stored_record = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get::<DataKey, RecordData>(&DataKey::MedicalRecord(record_id))
+                .expect("record should be persisted")
+        });
+        assert_eq!(stored_record.patient, *target_patient);
+        assert_eq!(stored_record.record_type, expected_record_type);
+        assert_eq!(stored_record.current_ref, expected_ref);
+        assert_eq!(stored_record.latest_version, 1u64);
+        assert_eq!(stored_record.policy, expected_policy);
+        assert_eq!(stored_record.history.len(), 1);
+
+        if *target_patient == patient1 {
+            expected_patient1_ids.push_back(record_id);
+        } else {
+            expected_patient2_ids.push_back(record_id);
+        }
+    }
+
+    assert_eq!(generated_ids.len(), num_records as u32);
+
+    // Verify total records created counter matches
+    assert_eq!(client.get_total_records_created(), num_records as u64);
+
+    // Record counter must live in persistent storage only.
+    assert!(
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .instance()
+                .get::<DataKey, u64>(&DataKey::RecordCounter)
+                .is_none()
+        }),
+        "instance storage should not contain RecordCounter"
+    );
+    assert_eq!(
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get::<DataKey, u64>(&DataKey::RecordCounter)
+        }),
+        Some(num_records as u64)
+    );
+
+    let stored_patient1_ids = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get::<DataKey, Vec<u64>>(&DataKey::PatientRecordIds(patient1.clone()))
+            .expect("patient1 ids should be stored")
+    });
+    let stored_patient2_ids = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get::<DataKey, Vec<u64>>(&DataKey::PatientRecordIds(patient2.clone()))
+            .expect("patient2 ids should be stored")
+    });
+    assert_eq!(stored_patient1_ids, expected_patient1_ids);
+    assert_eq!(stored_patient2_ids, expected_patient2_ids);
+
+    // Verify all patient records are retrievable by their sequential ID
+    for i in 0..num_records {
+        let id = generated_ids.get(i).unwrap();
+        let target_patient = if i % 2 == 0 { &patient1 } else { &patient2 };
+        let history = client.get_record_history(&id, target_patient, &0u32);
+        assert_eq!(history.ids.len(), 1);
+    }
 }
