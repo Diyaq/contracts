@@ -874,8 +874,8 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &50,
         &DegradationPolicy::Fail,
     ).unwrap().unwrap().job_id;
-    client.execute_next_report();
-    client.complete_report(&job1, &400, &50, &100);
+    client.execute_next_report(&admin).unwrap();
+    client.complete_report(&job1, &400, &50);
 
     // Second job: another 400 CPU — still below threshold (total 800, not > 800)
     let job2 = client.try_request_report(
@@ -886,8 +886,8 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &50,
         &DegradationPolicy::Fail,
     ).unwrap().unwrap().job_id;
-    client.execute_next_report();
-    client.complete_report(&job2, &400, &50, &100);
+    client.execute_next_report(&admin).unwrap();
+    client.complete_report(&job2, &400, &50);
 
     // Now TotalCpuUsed = 800; 800*100/1000 = 80, which is NOT > 80, so one more is still ok.
     // Push it over: complete a tiny job that adds 1 more CPU unit.
@@ -899,8 +899,8 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &1,
         &DegradationPolicy::Fail,
     ).unwrap().unwrap().job_id;
-    client.execute_next_report();
-    client.complete_report(&job3, &1, &1, &10);
+    client.execute_next_report(&admin).unwrap();
+    client.complete_report(&job3, &1, &1);
 
     // TotalCpuUsed = 801; 801*100/1000 = 80 (integer), still not > 80.
     // Add one more to make it 901 total.
@@ -929,7 +929,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
 
 #[test]
 fn test_cancel_report_queued() {
-    let (env, client, _admin) = setup_with_admin();
+    let (env, client, admin) = setup_with_admin();
     let requester = Address::generate(&env);
 
     let accepted = client
@@ -957,13 +957,13 @@ fn test_cancel_report_queued() {
     assert_eq!(err_not_found, Err(Ok(Error::JobNotFound)));
 
     // Cancelled job ID cannot be re-executed
-    let next_job = client.execute_next_report();
-    assert_eq!(next_job, None);
+    let next_job = client.execute_next_report(&admin);
+    assert_eq!(next_job, Ok(None));
 }
 
 #[test]
 fn test_cancel_report_executing() {
-    let (env, client, _admin) = setup_with_admin();
+    let (env, client, admin) = setup_with_admin();
     let requester = Address::generate(&env);
 
     let accepted = client
@@ -979,12 +979,116 @@ fn test_cancel_report_executing() {
     let job_id = accepted.job_id;
 
     // Start executing the job
-    let executed_id = client.execute_next_report().unwrap();
+    let executed_id = client.execute_next_report(&admin).unwrap().unwrap();
     assert_eq!(executed_id, job_id);
 
     // Executing job cancellation returns Error::JobAlreadyExecuting
     let err_executing = client.try_cancel_report(&requester, &job_id);
     assert_eq!(err_executing, Err(Ok(Error::JobAlreadyExecuting)));
+}
+
+// ========================
+// execute_next_report auth tests
+// ========================
+
+#[test]
+fn test_execute_next_report_requires_admin_auth() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    // Queue a report
+    client.request_report(
+        &requester,
+        &String::from_str(&env, "quality_metrics"),
+        &shared::resource_management::JobPriority::Normal,
+        &500_000,
+        &50_000,
+        &DegradationPolicy::Fail,
+    );
+
+    // Non-admin call should be rejected
+    let non_admin = Address::generate(&env);
+    let result = client.try_execute_next_report(&non_admin);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_execute_next_report_admin_succeeds() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    // Queue a report
+    let accepted = client.request_report(
+        &requester,
+        &String::from_str(&env, "quality_metrics"),
+        &shared::resource_management::JobPriority::Normal,
+        &500_000,
+        &50_000,
+        &DegradationPolicy::Fail,
+    );
+
+    // Admin call should succeed and return the job_id
+    let result = client.execute_next_report(&admin);
+    assert_eq!(result, Ok(Some(accepted.job_id)));
+}
+
+// ========================
+// set_resource_limits tests
+// ========================
+
+#[test]
+fn test_set_resource_limits_rejects_zero_cpu_budget() {
+    let (env, client, admin) = setup_with_admin();
+
+    let result = client.try_set_resource_limits(&admin, &0, &1_000_000, &5, &80);
+    assert_eq!(result, Err(Ok(Error::InvalidValue)));
+}
+
+#[test]
+fn test_set_resource_limits_rejects_zero_memory_budget() {
+    let (env, client, admin) = setup_with_admin();
+
+    let result = client.try_set_resource_limits(&admin, &1_000_000, &0, &5, &80);
+    assert_eq!(result, Err(Ok(Error::InvalidValue)));
+}
+
+#[test]
+fn test_set_resource_limits_rejects_both_zero() {
+    let (env, client, admin) = setup_with_admin();
+
+    let result = client.try_set_resource_limits(&admin, &0, &0, &5, &80);
+    assert_eq!(result, Err(Ok(Error::InvalidValue)));
+}
+
+#[test]
+fn test_set_resource_limits_accepts_nonzero_budgets() {
+    let (env, client, admin) = setup_with_admin();
+
+    let result = client.try_set_resource_limits(&admin, &1_000_000, &100_000, &5, &80);
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn test_request_report_throttle_check_no_panic_with_proper_budgets() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    // Set valid non-zero budgets
+    client.set_resource_limits(&admin, &10_000, &10_000, &5, &50);
+
+    // should_throttle_job is called internally; it should not panic
+    // because the budgets are guaranteed to be non-zero
+    let result = client.try_request_report(
+        &requester,
+        &String::from_str(&env, "quality_metrics"),
+        &JobPriority::Normal,
+        &100,
+        &100,
+        &DegradationPolicy::Fail,
+    );
+
+    // Should succeed, proving should_throttle_job didn't panic
+    assert!(result.is_ok());
 }
 
 // ========================

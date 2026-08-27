@@ -105,7 +105,13 @@ fn test_telemedicine_lifecycle() {
         is_controlled_substance: false,
     };
     let rx_id = client.prescribe_during_visit(&visit_id, &provider_id, &patient_id, &rx_request);
-    assert_eq!(rx_id, 0);
+    assert_eq!(rx_id, 1);
+
+    // Verify prescription was persisted
+    let stored_rx = client.get_prescription(&rx_id);
+    assert_eq!(stored_rx.medication_name, rx_request.medication_name);
+    assert_eq!(stored_rx.dosage, rx_request.dosage);
+    assert_eq!(stored_rx.is_controlled_substance, rx_request.is_controlled_substance);
 
     // 6. Record documentation
     let note_hash = BytesN::from_array(&env, &[1; 32]);
@@ -450,4 +456,103 @@ fn test_prescribe_controlled_substance_blocked_by_policy() {
         result,
         Err(Ok(crate::types::Error::ControlledSubstanceRequiresInPerson))
     );
+}
+
+#[test]
+fn test_prescribe_rx_id_uniqueness_and_persistence() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    let visit_time = 1700000000;
+
+    // Register provider license
+    client.register_provider_license(
+        &provider_id,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "LIC-NY-001"),
+        &0_u64,
+    );
+
+    // Schedule first visit
+    let visit_id_1 = client.schedule_virtual_visit(
+        &patient_id,
+        &provider_id,
+        &visit_time,
+        &Symbol::new(&env, "Consult"),
+        &30,
+        &Symbol::new(&env, "ZoomHD"),
+        &true,
+        &true,
+    );
+
+    // Start first session
+    let token_1 = client.start_virtual_session(
+        &visit_id_1,
+        &provider_id,
+        &visit_time,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "NY"),
+    );
+    client.validate_session_token(&visit_id_1, &provider_id, &token_1);
+
+    // Issue first prescription
+    let rx_request_1 = PrescriptionRequest {
+        medication_name: String::from_str(&env, "Amoxicillin"),
+        dosage: String::from_str(&env, "500mg"),
+        frequency: String::from_str(&env, "BID"),
+        duration_days: 10,
+        is_controlled_substance: false,
+    };
+    let rx_id_1 = client.prescribe_during_visit(&visit_id_1, &provider_id, &patient_id, &rx_request_1);
+
+    // Schedule second visit at same timestamp to test uniqueness
+    let visit_id_2 = client.schedule_virtual_visit(
+        &patient_id,
+        &provider_id,
+        &visit_time,
+        &Symbol::new(&env, "FollowUp"),
+        &15,
+        &Symbol::new(&env, "ZoomHD"),
+        &true,
+        &true,
+    );
+
+    // Start second session
+    let token_2 = client.start_virtual_session(
+        &visit_id_2,
+        &provider_id,
+        &visit_time,
+        &String::from_str(&env, "NY"),
+        &String::from_str(&env, "NY"),
+    );
+    client.validate_session_token(&visit_id_2, &provider_id, &token_2);
+
+    // Issue second prescription at same timestamp
+    let rx_request_2 = PrescriptionRequest {
+        medication_name: String::from_str(&env, "Ibuprofen"),
+        dosage: String::from_str(&env, "400mg"),
+        frequency: String::from_str(&env, "Q6H"),
+        duration_days: 5,
+        is_controlled_substance: false,
+    };
+    let rx_id_2 = client.prescribe_during_visit(&visit_id_2, &provider_id, &patient_id, &rx_request_2);
+
+    // rx_ids must be unique even though both prescriptions were issued at same timestamp
+    assert_ne!(rx_id_1, rx_id_2);
+    assert_eq!(rx_id_1, 1);
+    assert_eq!(rx_id_2, 2);
+
+    // Both prescriptions should be independently retrievable
+    let stored_rx_1 = client.get_prescription(&rx_id_1);
+    assert_eq!(stored_rx_1.medication_name, rx_request_1.medication_name);
+    assert_eq!(stored_rx_1.dosage, rx_request_1.dosage);
+
+    let stored_rx_2 = client.get_prescription(&rx_id_2);
+    assert_eq!(stored_rx_2.medication_name, rx_request_2.medication_name);
+    assert_eq!(stored_rx_2.dosage, rx_request_2.dosage);
 }

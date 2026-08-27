@@ -128,13 +128,140 @@ fn test_device_registration_and_reading() {
         },
     });
 
-    client.submit_device_reading(&device_id, &patient_id, &1672531200, &readings);
+    client.submit_device_reading(&device_id, &patient_id, &device_address, &1672531200, &readings);
 
     // Verify trends to see the reading was added
     let trends =
         client.get_vital_trends(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"), &0, &u64::MAX);
     assert_eq!(trends.len(), 1);
     assert_eq!(trends.get(0).unwrap().vitals.heart_rate, Some(75));
+}
+
+#[test]
+fn test_submit_device_reading_device_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let device_id = String::from_str(&env, "DEVICE_123");
+    let device_address = Address::generate(&env);
+
+    // Register the device
+    client.register_monitoring_device(
+        &patient_id,
+        &device_id,
+        &device_address,
+        &Symbol::new(&env, "watch"),
+        &String::from_str(&env, "SN-456"),
+        &1670000000,
+    );
+
+    let mut readings = Vec::new(&env);
+    readings.push_back(DeviceReading {
+        reading_time: 1672531200,
+        values: VitalSigns {
+            blood_pressure_systolic: None,
+            blood_pressure_diastolic: None,
+            heart_rate: Some(75),
+            temperature: None,
+            respiratory_rate: None,
+            oxygen_saturation: None,
+            blood_glucose: None,
+            weight: None,
+        },
+    });
+
+    // Device submits via its own auth (not patient auth)
+    client.submit_device_reading(&device_id, &patient_id, &device_address, &1672531200, &readings);
+
+    // Verify the reading was added
+    let trends =
+        client.get_vital_trends(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"), &0, &u64::MAX);
+    assert_eq!(trends.len(), 1);
+    assert_eq!(trends.get(0).unwrap().vitals.heart_rate, Some(75));
+    // Recorder should be the device address
+    assert_eq!(trends.get(0).unwrap().recorder, device_address);
+}
+
+#[test]
+fn test_submit_device_reading_patient_fallback() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let device_id = String::from_str(&env, "DEVICE_123");
+    let device_address = Address::generate(&env);
+
+    // Register the device
+    client.register_monitoring_device(
+        &patient_id,
+        &device_id,
+        &device_address,
+        &Symbol::new(&env, "watch"),
+        &String::from_str(&env, "SN-456"),
+        &1670000000,
+    );
+
+    let mut readings = Vec::new(&env);
+    readings.push_back(DeviceReading {
+        reading_time: 1672531200,
+        values: VitalSigns {
+            blood_pressure_systolic: None,
+            blood_pressure_diastolic: None,
+            heart_rate: Some(75),
+            temperature: None,
+            respiratory_rate: None,
+            oxygen_saturation: None,
+            blood_glucose: None,
+            weight: None,
+        },
+    });
+
+    // Patient can submit on device's behalf via fallback auth
+    client.submit_device_reading(&device_id, &patient_id, &device_address, &1672531200, &readings);
+
+    // Verify the reading was added
+    let trends =
+        client.get_vital_trends(&patient_id, &patient_id, &Symbol::new(&env, "heart_rate"), &0, &u64::MAX);
+    assert_eq!(trends.len(), 1);
+}
+
+#[test]
+fn test_submit_device_reading_unregistered_device_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let device_id = String::from_str(&env, "DEVICE_123");
+    let unregistered_device = Address::generate(&env);
+
+    let mut readings = Vec::new(&env);
+    readings.push_back(DeviceReading {
+        reading_time: 1672531200,
+        values: VitalSigns {
+            blood_pressure_systolic: None,
+            blood_pressure_diastolic: None,
+            heart_rate: Some(75),
+            temperature: None,
+            respiratory_rate: None,
+            oxygen_saturation: None,
+            blood_glucose: None,
+            weight: None,
+        },
+    });
+
+    // Attempt to submit with an unregistered device should fail
+    let result = client.try_submit_device_reading(&device_id, &patient_id, &unregistered_device, &1672531200, &readings);
+    assert_eq!(result, Err(Ok(crate::types::Error::NotFound)));
 }
 
 #[test]
