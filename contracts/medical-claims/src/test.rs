@@ -801,3 +801,120 @@ fn test_dispute_lifecycle() {
     let result = client.try_resolve_dispute(&other_dispute_id, &rogue, &resolution_hash);
     assert_eq!(result, Err(Ok(Error::NotAuthorizedReviewer)));
 }
+
+// ── #781: Reviewer deactivation tests ──────────────────────────────────────
+
+#[test]
+fn test_deactivated_reviewer_cannot_resolve_dispute() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, provider, patient, insurer) = setup(&env);
+
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &100,
+        &make_services(&env),
+        &Vec::new(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &5000,
+    );
+
+    let reviewer = Address::generate(&env);
+    client.register_reviewer(&admin, &reviewer);
+
+    // Deactivate the reviewer
+    client.deactivate_reviewer(&admin, &reviewer);
+
+    // Deactivated reviewer cannot resolve disputes
+    let reason_hash = reference_hash(&env, 9);
+    let dispute_id = client.open_dispute(&claim_id, &patient, &reason_hash);
+
+    let resolution_hash = reference_hash(&env, 10);
+    let result = client.try_resolve_dispute(&dispute_id, &reviewer, &resolution_hash);
+    assert_eq!(result, Err(Ok(Error::NotAuthorizedReviewer)));
+}
+
+#[test]
+fn test_reviewer_lifecycle_register_deactivate_resolve() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, provider, patient, insurer) = setup(&env);
+
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &100,
+        &make_services(&env),
+        &Vec::new(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &5000,
+    );
+
+    let reviewer = Address::generate(&env);
+
+    // Register reviewer — should succeed
+    client.register_reviewer(&admin, &reviewer);
+
+    let reason_hash = reference_hash(&env, 9);
+    let dispute_id = client.open_dispute(&claim_id, &patient, &reason_hash);
+
+    // Can resolve while active
+    let resolution_hash = reference_hash(&env, 10);
+    client.resolve_dispute(&dispute_id, &reviewer, &resolution_hash);
+
+    // Open another dispute
+    let dispute_id_2 = client.open_dispute(&claim_id, &provider, &reason_hash);
+
+    // Deactivate reviewer
+    client.deactivate_reviewer(&admin, &reviewer);
+
+    // Cannot resolve with deactivated reviewer
+    let result = client.try_resolve_dispute(&dispute_id_2, &reviewer, &resolution_hash);
+    assert_eq!(result, Err(Ok(Error::NotAuthorizedReviewer)));
+}
+
+#[test]
+fn test_re_registering_deactivated_reviewer_reactivates() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, provider, patient, insurer) = setup(&env);
+
+    let claim_id = client.submit_claim(
+        &provider,
+        &patient,
+        &insurer,
+        &1,
+        &100,
+        &make_services(&env),
+        &Vec::new(&env),
+        &BytesN::from_array(&env, &[0; 32]),
+        &policy(&env),
+        &5000,
+    );
+
+    let reviewer = Address::generate(&env);
+
+    // Register reviewer
+    client.register_reviewer(&admin, &reviewer);
+
+    // Deactivate reviewer
+    client.deactivate_reviewer(&admin, &reviewer);
+
+    // Re-register reviewer (should reactivate)
+    client.register_reviewer(&admin, &reviewer);
+
+    // Can now resolve disputes again
+    let reason_hash = reference_hash(&env, 9);
+    let dispute_id = client.open_dispute(&claim_id, &patient, &reason_hash);
+
+    let resolution_hash = reference_hash(&env, 10);
+    let result = client.try_resolve_dispute(&dispute_id, &reviewer, &resolution_hash);
+    assert!(result.is_ok());
+}

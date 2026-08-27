@@ -176,4 +176,6 @@ pub enum DataKey {
     Dispute(u64),
     /// #520: claim_id -> Vec<u64> of dispute_ids opened against that claim.
     ClaimDisputes(u64),
+    /// #781: reviewer_address -> bool indicating if reviewer is deactivated.
+    DeactivatedReviewers(Address),
 }
