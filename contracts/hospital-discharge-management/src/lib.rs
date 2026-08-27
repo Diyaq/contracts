@@ -106,6 +106,11 @@ impl HospitalDischargeContract {
         // Validate plan exists
         validate_plan_exists(&env, discharge_plan_id)?;
 
+        let mut plan = get_discharge_plan(&env, discharge_plan_id)?;
+        if plan.status != DischargeStatus::Planning && plan.status != DischargeStatus::ReadinessAssessed {
+            return Err(Error::InvalidStatus);
+        }
+
         // Calculate overall readiness score
         let total_score = medical_stability_score + functional_status_score + support_system_score;
         let average_score = total_score / 3;
@@ -133,6 +138,10 @@ impl HospitalDischargeContract {
         // Store assessment
         save_readiness_assessment(&env, discharge_plan_id, &assessment);
 
+        // Update plan status
+        plan.status = DischargeStatus::ReadinessAssessed;
+        save_discharge_plan(&env, discharge_plan_id, &plan);
+
         // Emit event
         env.events().publish(
             (Symbol::new(&env, "readiness_assessed"),),
@@ -157,6 +166,11 @@ impl HospitalDischargeContract {
         validate_plan_exists(&env, discharge_plan_id)?;
         Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
 
+        let mut plan = get_discharge_plan(&env, discharge_plan_id)?;
+        if plan.status != DischargeStatus::ReadinessAssessed && plan.status != DischargeStatus::OrdersCreated {
+            return Err(Error::InvalidStatus);
+        }
+
         let orders = DischargeOrders {
             discharge_plan_id,
             medications,
@@ -168,6 +182,10 @@ impl HospitalDischargeContract {
 
         // Store orders
         save_discharge_orders(&env, discharge_plan_id, &orders);
+
+        // Update plan status
+        plan.status = DischargeStatus::OrdersCreated;
+        save_discharge_plan(&env, discharge_plan_id, &plan);
 
         // Emit event
         env.events()
@@ -364,6 +382,10 @@ impl HospitalDischargeContract {
         Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
         let mut plan = get_discharge_plan(&env, discharge_plan_id)?;
 
+        if plan.status != DischargeStatus::OrdersCreated {
+            return Err(Error::InvalidStatus);
+        }
+
         // Update plan status
         plan.status = DischargeStatus::Completed;
         plan.actual_discharge_date = Some(actual_discharge_date);
@@ -386,6 +408,39 @@ impl HospitalDischargeContract {
         env.events().publish(
             (Symbol::new(&env, "discharge_completed"),),
             (discharge_plan_id, actual_discharge_date),
+        );
+
+        Ok(())
+    }
+
+    /// Cancel the discharge process
+    pub fn cancel_discharge(
+        env: Env,
+        caller: Address,
+        discharge_plan_id: u64,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+
+        // Validate plan exists and caller is authorized
+        validate_plan_exists(&env, discharge_plan_id)?;
+        Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
+        let mut plan = get_discharge_plan(&env, discharge_plan_id)?;
+
+        // Guard status: cannot cancel if already Completed or Cancelled
+        if plan.status == DischargeStatus::Completed || plan.status == DischargeStatus::Cancelled {
+            return Err(Error::InvalidStatus);
+        }
+
+        // Update plan status
+        plan.status = DischargeStatus::Cancelled;
+
+        // Save updated plan
+        save_discharge_plan(&env, discharge_plan_id, &plan);
+
+        // Emit event
+        env.events().publish(
+            (Symbol::new(&env, "discharge_cancelled"),),
+            discharge_plan_id,
         );
 
         Ok(())
