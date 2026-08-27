@@ -4275,6 +4275,98 @@ fn test_grant_access_allows_registered_provider() {
     assert_eq!(authorized.len(), 1);
 }
 
+#[test]
+fn test_grant_access_fails_when_registry_not_configured() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
+
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+    client.initialize(&admin, &treasury, &fee_token);
+
+    let patient = Address::generate(&env);
+    client.register_patient(
+        &patient,
+        &String::from_str(&env, "Test Patient"),
+        &631152000u64,
+        &encrypted_ref(&env, 5),
+        &policy(&env),
+    );
+
+    let v1 = BytesN::from_array(&env, &[1u8; 32]);
+    client.publish_consent_version(&v1);
+    client.acknowledge_consent(&patient, &patient, &v1);
+
+    let doctor = Address::generate(&env);
+    let result = client.try_grant_access(&patient, &patient, &doctor);
+    assert!(
+        result.is_err(),
+        "grant_access should reject any doctor when provider registry is not configured"
+    );
+}
+
+#[test]
+fn test_nonce_replay_protection_grant_access() {
+    use provider_registry::ProviderRegistry;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let fee_token = Address::generate(&env);
+
+    let registry_contract_id = env.register(ProviderRegistry, ());
+    let registry_client =
+        provider_registry::ProviderRegistryClient::new(&env, &registry_contract_id);
+    registry_client.initialize(&admin);
+
+    let contract_id = env.register(MedicalRegistry, ());
+    let client = MedicalRegistryClient::new(&env, &contract_id);
+    client.initialize(&admin, &treasury, &fee_token);
+    client.set_provider_registry(&registry_contract_id);
+
+    let patient = Address::generate(&env);
+    client.register_patient(
+        &patient,
+        &String::from_str(&env, "Test Patient"),
+        &631152000u64,
+        &encrypted_ref(&env, 6),
+        &policy(&env),
+    );
+
+    let doctor = Address::generate(&env);
+    registry_client.register_provider(
+        &admin,
+        &doctor,
+        &String::from_str(&env, "Dr. Test"),
+        &String::from_str(&env, "general"),
+        &String::from_str(&env, "LIC-001"),
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &admin,
+        &BytesN::from_array(&env, &[2u8; 32]),
+        &(env.ledger().timestamp() + 100_000),
+        &BytesN::from_array(&env, &[3u8; 32]),
+    );
+
+    let nonce: u64 = 1;
+    client.grant_access(&patient, &patient, &doctor, &nonce);
+    let authorized = client.get_authorized_doctors(&patient);
+    assert_eq!(authorized.len(), 1);
+
+    let stale_nonce: u64 = 1;
+    let result = client.try_grant_access(&patient, &patient, &doctor, &stale_nonce);
+    assert!(result.is_err(), "stale nonce should be rejected");
+
+    let new_nonce: u64 = 2;
+    let result2 = client.try_grant_access(&patient, &patient, &doctor, &new_nonce);
+    assert!(result2.is_ok(), "new nonce should succeed (even though doctor already has access)");
+}
+
 // ─── Guardian / proxy registration tests (#466) ──────────────────────────────
 
 #[test]
