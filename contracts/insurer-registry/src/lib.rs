@@ -283,9 +283,13 @@ impl InsurerRegistry {
         insurer_wallet.require_auth();
 
         let insurer_key = DataKey::Insurer(insurer_wallet.clone());
-        if !env.storage().persistent().has(&insurer_key) {
-            return Err(Error::InsurerNotFound);
-        }
+        let insurer: InsurerData = env
+            .storage()
+            .persistent()
+            .get(&insurer_key)
+            .ok_or(Error::InsurerNotFound)?;
+
+        Self::assert_credential_valid(&env, &insurer)?;
 
         env.storage()
             .persistent()
@@ -344,9 +348,13 @@ impl InsurerRegistry {
         wallet.require_auth();
 
         let insurer_key = DataKey::Insurer(wallet.clone());
-        if !env.storage().persistent().has(&insurer_key) {
-            return Err(Error::InsurerNotFound);
-        }
+        let insurer: InsurerData = env
+            .storage()
+            .persistent()
+            .get(&insurer_key)
+            .ok_or(Error::InsurerNotFound)?;
+
+        Self::assert_credential_valid(&env, &insurer)?;
 
         let counter_key = DataKey::CoveragePlanCounter(wallet.clone());
         let next_id: u64 = env
@@ -464,9 +472,13 @@ impl InsurerRegistry {
         }
 
         let insurer_key = DataKey::Insurer(insurer_wallet.clone());
-        if !env.storage().persistent().has(&insurer_key) {
-            return Err(Error::InsurerNotFound);
-        }
+        let insurer: InsurerData = env
+            .storage()
+            .persistent()
+            .get(&insurer_key)
+            .ok_or(Error::InsurerNotFound)?;
+
+        Self::assert_credential_valid(&env, &insurer)?;
 
         let reviewers_key = DataKey::ClaimsReviewers(insurer_wallet.clone());
         let existing: Vec<Address> = env

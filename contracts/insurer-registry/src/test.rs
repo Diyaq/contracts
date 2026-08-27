@@ -384,3 +384,238 @@ fn test_coverage_plans_round_trip() {
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded.get(0).unwrap().plan_name, String::from_str(&env, "PPO Gold"));
 }
+
+#[test]
+fn test_set_coverage_plans_rejects_revoked_insurer() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, InsurerRegistry);
+    let client = InsurerRegistryClient::new(&env, &contract_id);
+
+    let insurer_wallet = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.register_insurer(
+        &insurer_wallet,
+        &String::from_str(&env, "HealthGuard Insurance"),
+        &String::from_str(&env, "INS-2026-12345"),
+        &String::from_str(&env, "Coverage info"),
+        &dummy_hash(&env, 1),
+        &issuer,
+        &dummy_hash(&env, 2),
+        &4_100_000_000_u64,
+        &dummy_hash(&env, 3),
+    );
+
+    // Revoke the insurer's credential
+    client.revoke_credential(&issuer, &insurer_wallet, &symbol_short!("fraud"));
+
+    // Attempt to set coverage plans should fail
+    let mut plans = soroban_sdk::Vec::new(&env);
+    plans.push_back(CoveragePlan {
+        plan_id: 1,
+        plan_name: String::from_str(&env, "PPO Gold"),
+        service_codes: soroban_sdk::Vec::new(&env),
+        is_active: true,
+        effective_from: 0,
+        effective_until: None,
+    });
+
+    let result = client.try_set_coverage_plans(&insurer_wallet, &plans);
+    assert!(matches!(result, Err(Ok(Error::NotAuthorized))));
+}
+
+#[test]
+fn test_set_coverage_plans_rejects_expired_insurer() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, InsurerRegistry);
+    let client = InsurerRegistryClient::new(&env, &contract_id);
+
+    let insurer_wallet = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| li.timestamp = 100);
+
+    client.register_insurer(
+        &insurer_wallet,
+        &String::from_str(&env, "HealthGuard Insurance"),
+        &String::from_str(&env, "INS-2026-12345"),
+        &String::from_str(&env, "Coverage info"),
+        &dummy_hash(&env, 1),
+        &issuer,
+        &dummy_hash(&env, 2),
+        &150_u64,
+        &dummy_hash(&env, 3),
+    );
+
+    // Advance time past expiration
+    env.ledger().with_mut(|li| li.timestamp = 151);
+
+    // Attempt to set coverage plans should fail
+    let mut plans = soroban_sdk::Vec::new(&env);
+    plans.push_back(CoveragePlan {
+        plan_id: 1,
+        plan_name: String::from_str(&env, "PPO Gold"),
+        service_codes: soroban_sdk::Vec::new(&env),
+        is_active: true,
+        effective_from: 0,
+        effective_until: None,
+    });
+
+    let result = client.try_set_coverage_plans(&insurer_wallet, &plans);
+    assert!(matches!(result, Err(Ok(Error::NotAuthorized))));
+}
+
+#[test]
+fn test_add_coverage_plan_rejects_revoked_insurer() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, InsurerRegistry);
+    let client = InsurerRegistryClient::new(&env, &contract_id);
+
+    let insurer_wallet = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.register_insurer(
+        &insurer_wallet,
+        &String::from_str(&env, "HealthGuard Insurance"),
+        &String::from_str(&env, "INS-2026-12345"),
+        &String::from_str(&env, "Coverage info"),
+        &dummy_hash(&env, 1),
+        &issuer,
+        &dummy_hash(&env, 2),
+        &4_100_000_000_u64,
+        &dummy_hash(&env, 3),
+    );
+
+    // Revoke the insurer's credential
+    client.revoke_credential(&issuer, &insurer_wallet, &symbol_short!("fraud"));
+
+    // Attempt to add coverage plan should fail
+    let mut service_codes = soroban_sdk::Vec::new(&env);
+    service_codes.push_back(String::from_str(&env, "CPT99213"));
+
+    let result = client.try_add_coverage_plan(
+        &insurer_wallet,
+        &String::from_str(&env, "PPO Gold"),
+        &service_codes,
+        &true,
+        &0_u64,
+        &None,
+    );
+    assert!(matches!(result, Err(Ok(Error::NotAuthorized))));
+}
+
+#[test]
+fn test_add_coverage_plan_rejects_expired_insurer() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, InsurerRegistry);
+    let client = InsurerRegistryClient::new(&env, &contract_id);
+
+    let insurer_wallet = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| li.timestamp = 100);
+
+    client.register_insurer(
+        &insurer_wallet,
+        &String::from_str(&env, "HealthGuard Insurance"),
+        &String::from_str(&env, "INS-2026-12345"),
+        &String::from_str(&env, "Coverage info"),
+        &dummy_hash(&env, 1),
+        &issuer,
+        &dummy_hash(&env, 2),
+        &150_u64,
+        &dummy_hash(&env, 3),
+    );
+
+    // Advance time past expiration
+    env.ledger().with_mut(|li| li.timestamp = 151);
+
+    // Attempt to add coverage plan should fail
+    let mut service_codes = soroban_sdk::Vec::new(&env);
+    service_codes.push_back(String::from_str(&env, "CPT99213"));
+
+    let result = client.try_add_coverage_plan(
+        &insurer_wallet,
+        &String::from_str(&env, "PPO Gold"),
+        &service_codes,
+        &true,
+        &0_u64,
+        &None,
+    );
+    assert!(matches!(result, Err(Ok(Error::NotAuthorized))));
+}
+
+#[test]
+fn test_add_claims_reviewers_batch_rejects_revoked_insurer() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, InsurerRegistry);
+    let client = InsurerRegistryClient::new(&env, &contract_id);
+
+    let insurer_wallet = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let reviewer1 = Address::generate(&env);
+    let reviewer2 = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.register_insurer(
+        &insurer_wallet,
+        &String::from_str(&env, "HealthGuard Insurance"),
+        &String::from_str(&env, "INS-2026-12345"),
+        &String::from_str(&env, "Coverage info"),
+        &dummy_hash(&env, 1),
+        &issuer,
+        &dummy_hash(&env, 2),
+        &4_100_000_000_u64,
+        &dummy_hash(&env, 3),
+    );
+
+    // Revoke the insurer's credential
+    client.revoke_credential(&issuer, &insurer_wallet, &symbol_short!("fraud"));
+
+    // Attempt to add batch of reviewers should fail
+    let mut reviewers = soroban_sdk::Vec::new(&env);
+    reviewers.push_back(reviewer1);
+    reviewers.push_back(reviewer2);
+
+    let result = client.try_add_claims_reviewers_batch(&insurer_wallet, &reviewers);
+    assert!(matches!(result, Err(Ok(Error::NotAuthorized))));
+}
+
+#[test]
+fn test_add_claims_reviewers_batch_rejects_expired_insurer() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, InsurerRegistry);
+    let client = InsurerRegistryClient::new(&env, &contract_id);
+
+    let insurer_wallet = Address::generate(&env);
+    let issuer = Address::generate(&env);
+    let reviewer1 = Address::generate(&env);
+    let reviewer2 = Address::generate(&env);
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| li.timestamp = 100);
+
+    client.register_insurer(
+        &insurer_wallet,
+        &String::from_str(&env, "HealthGuard Insurance"),
+        &String::from_str(&env, "INS-2026-12345"),
+        &String::from_str(&env, "Coverage info"),
+        &dummy_hash(&env, 1),
+        &issuer,
+        &dummy_hash(&env, 2),
+        &150_u64,
+        &dummy_hash(&env, 3),
+    );
+
+    // Advance time past expiration
+    env.ledger().with_mut(|li| li.timestamp = 151);
+
+    // Attempt to add batch of reviewers should fail
+    let mut reviewers = soroban_sdk::Vec::new(&env);
+    reviewers.push_back(reviewer1);
+    reviewers.push_back(reviewer2);
+
+    let result = client.try_add_claims_reviewers_batch(&insurer_wallet, &reviewers);
+    assert!(matches!(result, Err(Ok(Error::NotAuthorized))));
+}
