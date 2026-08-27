@@ -3,7 +3,10 @@
 
 use crate::contract::{PatientVitalsContract, PatientVitalsContractClient};
 use crate::types::{AlertThresholds, DeviceReading, Range, VitalSigns, ALERT_COOLDOWN_SECONDS};
-use soroban_sdk::{testutils::Address as _, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, MockAuth, MockAuthInvoke},
+    Address, Env, IntoVal, String, Symbol, Vec,
+};
 
 #[test]
 fn test_record_vital_signs() {
@@ -914,6 +917,118 @@ fn test_device_can_trigger_vital_alert() {
     let alerts = client.get_alerts(&patient_id, &patient_id, &vital_type);
     assert_eq!(alerts.len(), 1, "device-triggered alert must be recorded");
     assert_eq!(alerts.get(0).unwrap().severity, Symbol::new(&env, "critical_hi"));
+}
+
+// ── #728: provider self-appointment requires patient consent ─────────────────
+
+/// An attacker must not be able to self-appoint as a patient's provider by
+/// calling set_monitoring_parameters(patient_id=victim, provider_id=attacker)
+/// and only authorizing as themselves. Without the patient's own signature the
+/// call must fail, and the attacker must gain no MonitoringParameters entry
+/// (and therefore no PHI read access via get_vital_trends / get_alerts).
+#[test]
+fn test_attacker_cannot_self_appoint_as_provider() {
+    let env = Env::default();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let victim = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let vital_type = Symbol::new(&env, "heart_rate");
+    let target_range = Range { min: 60, max: 100 };
+    let alert_thresholds = AlertThresholds {
+        critical_low: Some(40),
+        low: Some(50),
+        high: Some(110),
+        critical_high: Some(130),
+    };
+
+    // Attacker signs only for themselves (as provider_id) — the victim never
+    // authorizes this call. Real Soroban auth would never satisfy
+    // victim.require_auth() here, so the call must be rejected.
+    let result = client
+        .mock_auths(&[MockAuth {
+            address: &attacker,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "set_monitoring_parameters",
+                args: (
+                    &victim,
+                    &attacker,
+                    &vital_type,
+                    &target_range,
+                    &alert_thresholds,
+                    &3600u32,
+                )
+                    .into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_set_monitoring_parameters(
+            &victim,
+            &attacker,
+            &vital_type,
+            &target_range,
+            &alert_thresholds,
+            &3600,
+        );
+    assert!(
+        result.is_err(),
+        "attacker must not be able to self-appoint as provider without the patient's auth"
+    );
+
+    // No MonitoringParameters entry was created, so the attacker gained no PHI
+    // read access — get_vital_trends and get_alerts must still reject them.
+    // (mock_all_auths is used only to satisfy the requester's own require_auth();
+    // the Unauthorized rejection below comes from the application-level
+    // is_authorized_provider check, which the failed call above never satisfied.)
+    env.mock_all_auths();
+    let trends_result = client.try_get_vital_trends(
+        &attacker,
+        &victim,
+        &vital_type,
+        &0u64,
+        &u64::MAX,
+    );
+    assert!(
+        trends_result.is_err(),
+        "attacker must remain unable to read the victim's vital trends"
+    );
+
+    let alerts_result = client.try_get_alerts(&attacker, &victim, &vital_type);
+    assert!(
+        alerts_result.is_err(),
+        "attacker must remain unable to read the victim's alerts"
+    );
+}
+
+/// A patient who consents (both patient and provider authorize) can grant a
+/// provider monitoring access — the legitimate counterpart to the attack above.
+#[test]
+fn test_patient_consent_allows_provider_appointment() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PatientVitalsContract, ());
+    let client = PatientVitalsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    let vital_type = Symbol::new(&env, "heart_rate");
+
+    client.set_monitoring_parameters(
+        &patient_id,
+        &provider_id,
+        &vital_type,
+        &Range { min: 60, max: 100 },
+        &AlertThresholds { critical_low: None, low: None, high: None, critical_high: None },
+        &3600,
+    );
+
+    // Provider is now authorized to read the patient's alerts/trends.
+    let alerts = client.get_alerts(&provider_id, &patient_id, &vital_type);
+    assert_eq!(alerts.len(), 0);
 }
 
 /// The patient can still trigger their own alert (backward-compatible).
