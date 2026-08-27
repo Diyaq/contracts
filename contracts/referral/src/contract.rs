@@ -154,6 +154,31 @@ impl ReferralContract {
         Ok(())
     }
 
+    /// Returns whether `current -> new_status` is a legal state transition.
+    ///
+    /// This mirrors (and generalizes to all `ReferralStatus` variants) the
+    /// gating already enforced by the dedicated transition functions:
+    /// `accept_referral` and `decline_referral` both require `Pending`, and
+    /// `complete_referral` rejects `Pending`/`Declined`/`Cancelled`. Same-state
+    /// transitions and any backward/terminal-state jump are disallowed.
+    fn is_valid_status_transition(current: &ReferralStatus, new_status: &ReferralStatus) -> bool {
+        use ReferralStatus::*;
+        matches!(
+            (current, new_status),
+            (Pending, Accepted)
+                | (Pending, Declined)
+                | (Pending, Cancelled)
+                | (Accepted, Scheduled)
+                | (Accepted, InProgress)
+                | (Accepted, Cancelled)
+                | (Accepted, Completed)
+                | (Scheduled, InProgress)
+                | (Scheduled, Cancelled)
+                | (Scheduled, Completed)
+                | (InProgress, Completed)
+        )
+    }
+
     pub fn update_referral_status(
         env: Env,
         referral_id: u64,
@@ -192,6 +217,20 @@ impl ReferralContract {
         } else {
             return Err(Error::InvalidStatusTransition);
         };
+
+        if !Self::is_valid_status_transition(&referral.status, &new_status) {
+            return Err(Error::InvalidStatusTransition);
+        }
+
+        // Keep the timestamp fields consistent with what the dedicated
+        // accept_referral / complete_referral functions record for the
+        // corresponding transitions.
+        if new_status == ReferralStatus::Accepted {
+            referral.accepted_at = Some(env.ledger().timestamp());
+        }
+        if new_status == ReferralStatus::Completed {
+            referral.completed_at = Some(env.ledger().timestamp());
+        }
 
         referral.status = new_status;
         env.storage()
