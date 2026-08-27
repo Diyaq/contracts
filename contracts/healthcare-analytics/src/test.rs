@@ -3,12 +3,16 @@
 use super::*;
 use soroban_sdk::{symbol_short, testutils::Address as _, Address, BytesN, Env, String};
 
-fn setup() -> (Env, HealthcareAnalyticsClient<'static>) {
+fn setup() -> (Env, HealthcareAnalyticsClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register(HealthcareAnalytics, ());
     let client = HealthcareAnalyticsClient::new(&env, &contract_id);
-    (env, client)
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let recorder = Address::generate(&env);
+    client.authorize_provider(&admin, &recorder);
+    (env, client, recorder)
 }
 
 // ========================
@@ -17,9 +21,10 @@ fn setup() -> (Env, HealthcareAnalyticsClient<'static>) {
 
 #[test]
 fn test_record_metric_basic() {
-    let (_env, client) = setup();
+    let (_env, client, recorder) = setup();
 
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &120,
         &symbol_short!("vitals"),
@@ -37,11 +42,12 @@ fn test_record_metric_basic() {
 
 #[test]
 fn test_record_metric_with_metadata_hash() {
-    let (env, client) = setup();
+    let (env, client, recorder) = setup();
 
     let hash: BytesN<32> = BytesN::from_array(&env, &[1u8; 32]);
 
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &130,
         &symbol_short!("vitals"),
@@ -56,9 +62,10 @@ fn test_record_metric_with_metadata_hash() {
 
 #[test]
 fn test_record_multiple_metrics_same_type() {
-    let (_env, client) = setup();
+    let (_env, client, recorder) = setup();
 
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &120,
         &symbol_short!("vitals"),
@@ -66,6 +73,7 @@ fn test_record_multiple_metrics_same_type() {
         &None,
     );
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &130,
         &symbol_short!("vitals"),
@@ -73,6 +81,7 @@ fn test_record_multiple_metrics_same_type() {
         &None,
     );
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &110,
         &symbol_short!("vitals"),
@@ -90,9 +99,10 @@ fn test_record_multiple_metrics_same_type() {
 
 #[test]
 fn test_statistics_sum_overflow_rejected() {
-    let (_env, client) = setup();
+    let (_env, client, recorder) = setup();
 
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &i128::MAX,
         &symbol_short!("vitals"),
@@ -100,6 +110,7 @@ fn test_statistics_sum_overflow_rejected() {
         &None,
     );
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &1,
         &symbol_short!("vitals"),
@@ -119,9 +130,10 @@ fn test_statistics_sum_overflow_rejected() {
 
 #[test]
 fn test_record_metrics_different_types() {
-    let (_env, client) = setup();
+    let (_env, client, recorder) = setup();
 
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &120,
         &symbol_short!("vitals"),
@@ -129,6 +141,7 @@ fn test_record_metrics_different_types() {
         &None,
     );
     client.record_metric(
+        &recorder,
         &symbol_short!("hr"),
         &72,
         &symbol_short!("vitals"),
@@ -149,9 +162,10 @@ fn test_record_metrics_different_types() {
 
 #[test]
 fn test_record_metric_negative_values() {
-    let (_env, client) = setup();
+    let (_env, client, recorder) = setup();
 
     client.record_metric(
+        &recorder,
         &symbol_short!("temp"),
         &-5,
         &symbol_short!("lab"),
@@ -159,6 +173,7 @@ fn test_record_metric_negative_values() {
         &None,
     );
     client.record_metric(
+        &recorder,
         &symbol_short!("temp"),
         &10,
         &symbol_short!("lab"),
@@ -174,15 +189,56 @@ fn test_record_metric_negative_values() {
     assert_eq!(stats.max, 10);
 }
 
+#[test]
+fn test_record_metric_rejects_unregistered_provider() {
+    let (env, client, _recorder) = setup();
+
+    let unregistered = Address::generate(&env);
+
+    let result = client.try_record_metric(
+        &unregistered,
+        &symbol_short!("bp"),
+        &120,
+        &symbol_short!("vitals"),
+        &1700000000,
+        &None,
+    );
+
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_authorize_provider_rejects_non_admin() {
+    let (env, client, admin) = setup_with_admin();
+
+    let non_admin = Address::generate(&env);
+    let provider = Address::generate(&env);
+
+    let result = client.try_authorize_provider(&non_admin, &provider);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+
+    // The admin path still works, confirming the rejection above was auth-specific.
+    client.authorize_provider(&admin, &provider);
+    client.record_metric(
+        &provider,
+        &symbol_short!("bp"),
+        &120,
+        &symbol_short!("vitals"),
+        &1700000000,
+        &None,
+    );
+}
+
 // ========================
 // get_statistics tests
 // ========================
 
 #[test]
 fn test_get_statistics_time_range_filter() {
-    let (_env, client) = setup();
+    let (_env, client, recorder) = setup();
 
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &120,
         &symbol_short!("vitals"),
@@ -190,6 +246,7 @@ fn test_get_statistics_time_range_filter() {
         &None,
     );
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &140,
         &symbol_short!("vitals"),
@@ -197,6 +254,7 @@ fn test_get_statistics_time_range_filter() {
         &None,
     );
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &100,
         &symbol_short!("vitals"),
@@ -216,9 +274,10 @@ fn test_get_statistics_time_range_filter() {
 
 #[test]
 fn test_get_statistics_category_filter() {
-    let (_env, client) = setup();
+    let (_env, client, recorder) = setup();
 
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &120,
         &symbol_short!("vitals"),
@@ -226,6 +285,7 @@ fn test_get_statistics_category_filter() {
         &None,
     );
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &200,
         &symbol_short!("emer"),
@@ -233,6 +293,7 @@ fn test_get_statistics_category_filter() {
         &None,
     );
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &130,
         &symbol_short!("vitals"),
@@ -255,9 +316,10 @@ fn test_get_statistics_category_filter() {
 
 #[test]
 fn test_get_statistics_time_and_category_filter() {
-    let (_env, client) = setup();
+    let (_env, client, recorder) = setup();
 
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &120,
         &symbol_short!("vitals"),
@@ -265,6 +327,7 @@ fn test_get_statistics_time_and_category_filter() {
         &None,
     );
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &200,
         &symbol_short!("emer"),
@@ -272,6 +335,7 @@ fn test_get_statistics_time_and_category_filter() {
         &None,
     );
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &130,
         &symbol_short!("vitals"),
@@ -292,7 +356,7 @@ fn test_get_statistics_time_and_category_filter() {
 
 #[test]
 fn test_get_statistics_invalid_time_range() {
-    let (_env, client) = setup();
+    let (_env, client, _recorder) = setup();
 
     let result = client.try_get_statistics(&symbol_short!("bp"), &1700001000, &1700000000, &None);
     assert!(result.is_err());
@@ -300,7 +364,7 @@ fn test_get_statistics_invalid_time_range() {
 
 #[test]
 fn test_get_statistics_no_data() {
-    let (_env, client) = setup();
+    let (_env, client, _recorder) = setup();
 
     let result = client.try_get_statistics(&symbol_short!("bp"), &1700000000, &1700001000, &None);
     assert!(result.is_err());
@@ -308,9 +372,10 @@ fn test_get_statistics_no_data() {
 
 #[test]
 fn test_get_statistics_no_data_in_range() {
-    let (_env, client) = setup();
+    let (_env, client, recorder) = setup();
 
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &120,
         &symbol_short!("vitals"),
@@ -325,9 +390,10 @@ fn test_get_statistics_no_data_in_range() {
 
 #[test]
 fn test_get_statistics_single_record() {
-    let (_env, client) = setup();
+    let (_env, client, recorder) = setup();
 
     client.record_metric(
+        &recorder,
         &symbol_short!("hr"),
         &72,
         &symbol_short!("vitals"),
@@ -345,9 +411,10 @@ fn test_get_statistics_single_record() {
 
 #[test]
 fn test_get_statistics_exact_boundary_timestamps() {
-    let (_env, client) = setup();
+    let (_env, client, recorder) = setup();
 
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &120,
         &symbol_short!("vitals"),
@@ -367,7 +434,7 @@ fn test_get_statistics_exact_boundary_timestamps() {
 
 #[test]
 fn test_record_quality_metric_basic() {
-    let (env, client) = setup();
+    let (env, client, _recorder) = setup();
 
     let provider = Address::generate(&env);
 
@@ -389,7 +456,7 @@ fn test_record_quality_metric_basic() {
 
 #[test]
 fn test_record_multiple_quality_metrics_same_provider() {
-    let (env, client) = setup();
+    let (env, client, _recorder) = setup();
 
     let provider = Address::generate(&env);
 
@@ -418,7 +485,7 @@ fn test_record_multiple_quality_metrics_same_provider() {
 
 #[test]
 fn test_record_quality_metric_different_periods() {
-    let (env, client) = setup();
+    let (env, client, _recorder) = setup();
 
     let provider = Address::generate(&env);
 
@@ -446,7 +513,7 @@ fn test_record_quality_metric_different_periods() {
 
 #[test]
 fn test_record_quality_metric_different_providers() {
-    let (env, client) = setup();
+    let (env, client, _recorder) = setup();
 
     let provider_a = Address::generate(&env);
     let provider_b = Address::generate(&env);
@@ -479,7 +546,7 @@ fn test_record_quality_metric_different_providers() {
 
 #[test]
 fn test_get_quality_metrics_no_data() {
-    let (env, client) = setup();
+    let (env, client, _recorder) = setup();
 
     let provider = Address::generate(&env);
 
@@ -489,7 +556,7 @@ fn test_get_quality_metrics_no_data() {
 
 #[test]
 fn test_get_quality_metrics_wrong_period() {
-    let (env, client) = setup();
+    let (env, client, _recorder) = setup();
 
     let provider = Address::generate(&env);
 
@@ -510,12 +577,13 @@ fn test_get_quality_metrics_wrong_period() {
 
 #[test]
 fn test_privacy_preserving_aggregation() {
-    let (_env, client) = setup();
+    let (_env, client, recorder) = setup();
 
     // Record metrics from different categories (simulating different sources)
     // without any patient-identifying information
     for i in 0..10 {
         client.record_metric(
+            &recorder,
             &symbol_short!("bmi"),
             &(20 + i as i128),
             &symbol_short!("pop"),
@@ -536,10 +604,11 @@ fn test_privacy_preserving_aggregation() {
 
 #[test]
 fn test_multiple_metric_types_aggregation() {
-    let (_env, client) = setup();
+    let (_env, client, recorder) = setup();
 
     // Blood pressure metrics
     client.record_metric(
+        &recorder,
         &symbol_short!("bp_sys"),
         &120,
         &symbol_short!("cardio"),
@@ -547,6 +616,7 @@ fn test_multiple_metric_types_aggregation() {
         &None,
     );
     client.record_metric(
+        &recorder,
         &symbol_short!("bp_sys"),
         &140,
         &symbol_short!("cardio"),
@@ -556,6 +626,7 @@ fn test_multiple_metric_types_aggregation() {
 
     // Heart rate metrics
     client.record_metric(
+        &recorder,
         &symbol_short!("hr"),
         &72,
         &symbol_short!("cardio"),
@@ -563,6 +634,7 @@ fn test_multiple_metric_types_aggregation() {
         &None,
     );
     client.record_metric(
+        &recorder,
         &symbol_short!("hr"),
         &80,
         &symbol_short!("cardio"),
@@ -572,6 +644,7 @@ fn test_multiple_metric_types_aggregation() {
 
     // Lab result metrics
     client.record_metric(
+        &recorder,
         &symbol_short!("glucose"),
         &95,
         &symbol_short!("lab"),
@@ -595,7 +668,7 @@ fn test_multiple_metric_types_aggregation() {
 
 #[test]
 fn test_time_series_support() {
-    let (_env, client) = setup();
+    let (_env, client, recorder) = setup();
 
     // Record metrics across multiple time periods
     let base_time: u64 = 1700000000;
@@ -603,6 +676,7 @@ fn test_time_series_support() {
 
     // Week 1 metrics
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &120,
         &symbol_short!("vitals"),
@@ -610,6 +684,7 @@ fn test_time_series_support() {
         &None,
     );
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &125,
         &symbol_short!("vitals"),
@@ -619,6 +694,7 @@ fn test_time_series_support() {
 
     // Week 2 metrics
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &130,
         &symbol_short!("vitals"),
@@ -626,6 +702,7 @@ fn test_time_series_support() {
         &None,
     );
     client.record_metric(
+        &recorder,
         &symbol_short!("bp"),
         &135,
         &symbol_short!("vitals"),
@@ -797,7 +874,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &50,
         &DegradationPolicy::Fail,
     ).unwrap().unwrap().job_id;
-    client.execute_next_report();
+    client.execute_next_report(&admin).unwrap();
     client.complete_report(&job1, &400, &50);
 
     // Second job: another 400 CPU — still below threshold (total 800, not > 800)
@@ -809,7 +886,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &50,
         &DegradationPolicy::Fail,
     ).unwrap().unwrap().job_id;
-    client.execute_next_report();
+    client.execute_next_report(&admin).unwrap();
     client.complete_report(&job2, &400, &50);
 
     // Now TotalCpuUsed = 800; 800*100/1000 = 80, which is NOT > 80, so one more is still ok.
@@ -822,7 +899,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &1,
         &DegradationPolicy::Fail,
     ).unwrap().unwrap().job_id;
-    client.execute_next_report();
+    client.execute_next_report(&admin).unwrap();
     client.complete_report(&job3, &1, &1);
 
     // TotalCpuUsed = 801; 801*100/1000 = 80 (integer), still not > 80.
@@ -836,7 +913,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
         &DegradationPolicy::Fail,
     ).unwrap().unwrap().job_id;
     client.execute_next_report();
-    client.complete_report(&job4, &100, &1);
+    client.complete_report(&job4, &100, &1, &50);
 
     // TotalCpuUsed = 901; 901*100/1000 = 90 > 80 → throttled
     let result = client.try_request_report(
@@ -852,7 +929,7 @@ fn test_cpu_quota_accumulates_across_jobs() {
 
 #[test]
 fn test_cancel_report_queued() {
-    let (env, client, _admin) = setup_with_admin();
+    let (env, client, admin) = setup_with_admin();
     let requester = Address::generate(&env);
 
     let accepted = client
@@ -880,13 +957,13 @@ fn test_cancel_report_queued() {
     assert_eq!(err_not_found, Err(Ok(Error::JobNotFound)));
 
     // Cancelled job ID cannot be re-executed
-    let next_job = client.execute_next_report();
-    assert_eq!(next_job, None);
+    let next_job = client.execute_next_report(&admin);
+    assert_eq!(next_job, Ok(None));
 }
 
 #[test]
 fn test_cancel_report_executing() {
-    let (env, client, _admin) = setup_with_admin();
+    let (env, client, admin) = setup_with_admin();
     let requester = Address::generate(&env);
 
     let accepted = client
@@ -902,12 +979,116 @@ fn test_cancel_report_executing() {
     let job_id = accepted.job_id;
 
     // Start executing the job
-    let executed_id = client.execute_next_report().unwrap();
+    let executed_id = client.execute_next_report(&admin).unwrap().unwrap();
     assert_eq!(executed_id, job_id);
 
     // Executing job cancellation returns Error::JobAlreadyExecuting
     let err_executing = client.try_cancel_report(&requester, &job_id);
     assert_eq!(err_executing, Err(Ok(Error::JobAlreadyExecuting)));
+}
+
+// ========================
+// execute_next_report auth tests
+// ========================
+
+#[test]
+fn test_execute_next_report_requires_admin_auth() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    // Queue a report
+    client.request_report(
+        &requester,
+        &String::from_str(&env, "quality_metrics"),
+        &shared::resource_management::JobPriority::Normal,
+        &500_000,
+        &50_000,
+        &DegradationPolicy::Fail,
+    );
+
+    // Non-admin call should be rejected
+    let non_admin = Address::generate(&env);
+    let result = client.try_execute_next_report(&non_admin);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_execute_next_report_admin_succeeds() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    // Queue a report
+    let accepted = client.request_report(
+        &requester,
+        &String::from_str(&env, "quality_metrics"),
+        &shared::resource_management::JobPriority::Normal,
+        &500_000,
+        &50_000,
+        &DegradationPolicy::Fail,
+    );
+
+    // Admin call should succeed and return the job_id
+    let result = client.execute_next_report(&admin);
+    assert_eq!(result, Ok(Some(accepted.job_id)));
+}
+
+// ========================
+// set_resource_limits tests
+// ========================
+
+#[test]
+fn test_set_resource_limits_rejects_zero_cpu_budget() {
+    let (env, client, admin) = setup_with_admin();
+
+    let result = client.try_set_resource_limits(&admin, &0, &1_000_000, &5, &80);
+    assert_eq!(result, Err(Ok(Error::InvalidValue)));
+}
+
+#[test]
+fn test_set_resource_limits_rejects_zero_memory_budget() {
+    let (env, client, admin) = setup_with_admin();
+
+    let result = client.try_set_resource_limits(&admin, &1_000_000, &0, &5, &80);
+    assert_eq!(result, Err(Ok(Error::InvalidValue)));
+}
+
+#[test]
+fn test_set_resource_limits_rejects_both_zero() {
+    let (env, client, admin) = setup_with_admin();
+
+    let result = client.try_set_resource_limits(&admin, &0, &0, &5, &80);
+    assert_eq!(result, Err(Ok(Error::InvalidValue)));
+}
+
+#[test]
+fn test_set_resource_limits_accepts_nonzero_budgets() {
+    let (env, client, admin) = setup_with_admin();
+
+    let result = client.try_set_resource_limits(&admin, &1_000_000, &100_000, &5, &80);
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn test_request_report_throttle_check_no_panic_with_proper_budgets() {
+    let (env, client, admin) = setup_with_admin();
+    let requester = Address::generate(&env);
+
+    // Set valid non-zero budgets
+    client.set_resource_limits(&admin, &10_000, &10_000, &5, &50);
+
+    // should_throttle_job is called internally; it should not panic
+    // because the budgets are guaranteed to be non-zero
+    let result = client.try_request_report(
+        &requester,
+        &String::from_str(&env, "quality_metrics"),
+        &JobPriority::Normal,
+        &100,
+        &100,
+        &DegradationPolicy::Fail,
+    );
+
+    // Should succeed, proving should_throttle_job didn't panic
+    assert!(result.is_ok());
 }
 
 // ========================

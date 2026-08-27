@@ -563,7 +563,6 @@ impl MedicalRegistry {
         env.storage()
             .instance()
             .set(&DataKey::TotalAccessGrants, &0u64);
-        env.storage().instance().set(&DataKey::RecordCounter, &0u64);
         Ok(())
     }
 
@@ -1317,9 +1316,11 @@ impl MedicalRegistry {
         patient: Address,
         caller: Address,
         doctor: Address,
+        caller_nonce: u64,
     ) -> Result<(), ContractError> {
         Self::require_not_frozen(&env);
         require_patient_or_guardian(&env, &patient, &caller)?;
+        Self::verify_and_increment_nonce(&env, &caller, caller_nonce)?;
         Self::require_not_on_hold(&env, &patient)?;
 
         if !Self::is_provider_registered(&env, &doctor) {
@@ -1394,9 +1395,11 @@ impl MedicalRegistry {
         patient: Address,
         caller: Address,
         doctor: Address,
+        caller_nonce: u64,
     ) -> Result<(), ContractError> {
         Self::require_not_frozen(&env);
         require_patient_or_guardian(&env, &patient, &caller)?;
+        Self::verify_and_increment_nonce(&env, &caller, caller_nonce)?;
         Self::require_not_on_hold(&env, &patient)?;
 
         let key = DataKey::AuthorizedDoctors(patient.clone());
@@ -1445,10 +1448,12 @@ impl MedicalRegistry {
         encrypted_ref: EncryptedEnvelopeRef,
         record_type: Symbol,
         policy: PolicyMetadata,
+        doctor_nonce: u64,
     ) -> Result<u64, ContractError> {
         Self::require_not_frozen(&env);
         Self::require_patient_exists(&env, &patient)?;
         doctor.require_auth();
+        Self::verify_and_increment_nonce(&env, &doctor, doctor_nonce)?;
         validate_encrypted_ref(&encrypted_ref)
             .map_err(|_| ContractError::InvalidEncryptedEnvelope)?;
         validate_policy_metadata(&policy).map_err(|_| ContractError::InvalidPolicyMetadata)?;
@@ -1492,17 +1497,6 @@ impl MedicalRegistry {
 
         let timestamp = env.ledger().timestamp();
 
-        // Advance global monotonic record counter (instance storage).
-        let mut record_id: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::RecordCounter)
-            .unwrap_or(0u64);
-        record_id += 1;
-        env.storage()
-            .instance()
-            .set(&DataKey::RecordCounter, &record_id);
-
         let initial_version = RecordVersion {
             encrypted_ref: encrypted_ref.clone(),
             updated_by: doctor.clone(),
@@ -1522,11 +1516,15 @@ impl MedicalRegistry {
             policy: policy.clone(),
         };
 
+        // Advance global monotonic record counter (persistent storage as single source of truth).
         let counter_key = DataKey::RecordCounter;
-        let record_id: u64 = env.storage().persistent().get(&counter_key).unwrap_or(0u64) + 1;
+        let record_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&counter_key)
+            .unwrap_or(0u64)
+            + 1;
         env.storage().persistent().set(&counter_key, &record_id);
-
-        let timestamp = env.ledger().timestamp();
 
         let record = MedicalRecord {
             record_id,
@@ -1903,6 +1901,7 @@ impl MedicalRegistry {
         record_id: u64,
         new_encrypted_ref: EncryptedEnvelopeRef,
         policy: PolicyMetadata,
+        caller_nonce: u64,
     ) -> Result<(), ContractError> {
         Self::require_not_frozen(&env);
 
@@ -1918,6 +1917,7 @@ impl MedicalRegistry {
         Self::require_not_on_hold(&env, &patient)?;
 
         caller.require_auth();
+        Self::verify_and_increment_nonce(&env, &caller, caller_nonce)?;
         require_record_access(&env, &patient, &caller)?;
 
         validate_encrypted_ref(&new_encrypted_ref)
@@ -2700,8 +2700,8 @@ impl MedicalRegistry {
     //                  PRIVATE HELPERS
     // =====================================================
 
-    /// Returns true if the provider-registry is not configured, or if the address
-    /// is a registered and active provider in the configured registry.
+    /// Returns false if the provider-registry is not configured (fail-closed default).
+    /// Otherwise, returns true if the address is a registered and active provider in the configured registry.
     fn is_provider_registered(env: &Env, provider: &Address) -> bool {
         let registry: Address = match env
             .storage()
@@ -2709,7 +2709,7 @@ impl MedicalRegistry {
             .get::<DataKey, Address>(&DataKey::ProviderRegistry)
         {
             Some(r) => r,
-            None => return true,
+            None => return false,
         };
         let args: Vec<soroban_sdk::Val> = vec![env, provider.clone().into_val(env)];
         env.invoke_contract(&registry, &Symbol::new(env, "is_provider"), args)

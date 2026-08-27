@@ -47,6 +47,7 @@ pub enum Error {
     NoRotationPending = 10,
     RotationExpired   = 11,
     NotPendingAdmin   = 12,
+    TooManyProposals  = 13,
 }
 
 #[contracttype]
@@ -81,6 +82,7 @@ pub enum DataKey {
     RotationExpiry,
     ProposalCount,
     Members,
+    ActiveProposalCount,
 }
 
 #[contract]
@@ -95,6 +97,7 @@ impl GovernanceVotingContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::NextId, &1u64);
         env.storage().instance().set(&DataKey::ProposalCount, &0u32);
+        env.storage().instance().set(&DataKey::ActiveProposalCount, &0u32);
         let empty_members: Vec<Address> = Vec::new(&env);
         env.storage().instance().set(&DataKey::Members, &empty_members);
         Ok(())
@@ -191,9 +194,13 @@ impl GovernanceVotingContract {
         }
         if quorum == 0 { return Err(Error::InvalidQuorum); }
 
-        let count: u32 = env.storage().instance().get(&DataKey::ProposalCount).unwrap_or(0);
-        if count >= MAX_PROPOSALS {
-            return Err(Error::Unauthorized);
+        let active_count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveProposalCount)
+            .unwrap_or(0);
+        if active_count >= MAX_PROPOSALS {
+            return Err(Error::TooManyProposals);
         }
 
         let id: u64 = env.storage().instance().get(&DataKey::NextId).unwrap_or(1);
@@ -212,7 +219,9 @@ impl GovernanceVotingContract {
         };
         env.storage().persistent().set(&DataKey::Proposal(id), &proposal);
         env.storage().instance().set(&DataKey::NextId, &(id + 1));
-        env.storage().instance().set(&DataKey::ProposalCount, &(count + 1));
+        let total_count: u32 = env.storage().instance().get(&DataKey::ProposalCount).unwrap_or(0);
+        env.storage().instance().set(&DataKey::ProposalCount, &(total_count + 1));
+        env.storage().instance().set(&DataKey::ActiveProposalCount, &(active_count + 1));
 
         env.events().publish((symbol_short!("PROPOSE"), admin), id);
         Ok(id)
@@ -264,7 +273,8 @@ impl GovernanceVotingContract {
         if env.ledger().timestamp() > proposal.deadline {
             proposal.status = ProposalStatus::Expired;
             env.storage().persistent().set(&DataKey::Proposal(proposal_id), &proposal);
-            return Err(Error::ProposalExpired);
+            Self::decrement_active_proposals(&env);
+            return Ok(());
         }
 
         match choice {
@@ -290,16 +300,32 @@ impl GovernanceVotingContract {
         }
 
         let total = proposal.yes_votes + proposal.no_votes;
-        proposal.status = if env.ledger().timestamp() < proposal.deadline {
-            ProposalStatus::Active
-        } else if total < proposal.quorum || proposal.yes_votes <= proposal.no_votes {
-            ProposalStatus::Rejected
+        if env.ledger().timestamp() < proposal.deadline {
+            proposal.status = ProposalStatus::Active;
         } else {
-            ProposalStatus::Passed
-        };
+            proposal.status = if total < proposal.quorum || proposal.yes_votes <= proposal.no_votes {
+                ProposalStatus::Rejected
+            } else {
+                ProposalStatus::Passed
+            };
+            Self::decrement_active_proposals(&env);
+        }
 
         env.storage().persistent().set(&DataKey::Proposal(proposal_id), &proposal);
         Ok(proposal.status.clone())
+    }
+
+    fn decrement_active_proposals(env: &Env) {
+        let active: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveProposalCount)
+            .unwrap_or(0);
+        if active > 0 {
+            env.storage()
+                .instance()
+                .set(&DataKey::ActiveProposalCount, &(active - 1));
+        }
     }
 
     pub fn get_proposal(env: Env, id: u64) -> Result<Proposal, Error> {

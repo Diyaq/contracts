@@ -119,6 +119,12 @@ impl PatientVitalsContract {
         monitoring_frequency: u32,
     ) -> Result<(), Error> {
         provider_id.require_auth();
+        // #728: a MonitoringParameters record grants `provider_id` PHI read access
+        // to the patient (see is_authorized_provider). Without the patient's own
+        // signature, any address could self-appoint as "provider" for any patient
+        // by simply calling this function and authorizing as themselves. Require
+        // the patient's consent for every such grant.
+        patient_id.require_auth();
 
         let key = DataKey::MonitoringParams(patient_id, vital_type);
         let params = MonitoringParameters {
@@ -163,16 +169,28 @@ impl PatientVitalsContract {
         env: Env,
         device_id: String,
         patient_id: Address,
+        device_address: Address,
         _reading_time: u64,
         readings: Vec<DeviceReading>,
     ) -> Result<(), Error> {
-        // Assume device or patient has permission to submit
-        patient_id.require_auth();
-
         // Verify device is registered
         let device_key = DataKey::DeviceReg(patient_id.clone(), device_id);
         if !env.storage().persistent().has(&device_key) {
             return Err(Error::NotFound); // Device not registered
+        }
+
+        // Authorization: require auth from either the device or the patient
+        // Primary path: registered device submits on its own authority
+        let is_device = env
+            .storage()
+            .persistent()
+            .has(&DataKey::DeviceAddress(patient_id.clone(), device_address.clone()));
+
+        if is_device {
+            device_address.require_auth();
+        } else {
+            // Fallback: patient can submit readings on device's behalf
+            patient_id.require_auth();
         }
 
         let key = DataKey::VitalsHistory(patient_id.clone());
@@ -186,7 +204,7 @@ impl PatientVitalsContract {
             history.push_back(VitalReading {
                 measurement_time: reading.reading_time,
                 vitals: reading.values.clone(),
-                recorder: patient_id.clone(), // or device address
+                recorder: device_address.clone(),
             });
             Self::evaluate_thresholds(&env, &patient_id, reading.reading_time, &reading.values);
         }

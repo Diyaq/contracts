@@ -312,30 +312,6 @@ impl HospitalRegistry {
             .publish((symbol_short!("audit"), caller.clone()), event);
     }
 
-    /// Check if caller is authorized to modify the hospital's config.
-    /// Authorized if: caller is the hospital OR caller is the admin.
-    fn assert_config_auth(
-        env: &Env,
-        caller: &Address,
-        hospital_address: &Address,
-    ) -> Result<(), ContractError> {
-        caller.require_auth();
-
-        // Hospital representative can update their own config
-        if caller == hospital_address {
-            return Ok(());
-        }
-
-        // Admin can update any hospital config
-        if let Some(admin) = env.storage().persistent().get::<_, Address>(&DataKey::Admin) {
-            if caller == &admin {
-                return Ok(());
-            }
-        }
-
-        Err(ContractError::NotAuthorized)
-    }
-
     /// Set the admin address. Only callable by the current admin (if set) or initially.
     pub fn set_admin(env: Env, caller: Address, admin: Address) -> Result<(), ContractError> {
         validate_nonzero_address(&admin).map_err(|_| ContractError::InvalidAddress)?;

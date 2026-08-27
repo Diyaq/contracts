@@ -85,12 +85,12 @@ impl MedicalDeviceRegistry {
 
         let device = DeviceRecord {
             device_id: new_id,
-            device_udi,
-            device_type,
-            manufacturer_id,
-            manufacturer,
-            model_number,
-            lot_number,
+            device_udi: device_udi.clone(),
+            device_type: device_type.clone(),
+            manufacturer_id: manufacturer_id.clone(),
+            manufacturer: manufacturer.clone(),
+            model_number: model_number.clone(),
+            lot_number: lot_number.clone(),
             manufacturing_date,
             expiration_date,
             device_specs_hash,
@@ -101,6 +101,11 @@ impl MedicalDeviceRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::DeviceRecord(new_id), &device);
+
+        env.events().publish(
+            (Symbol::new(&env, "device_registered"),),
+            (new_id, device_type, device_udi),
+        );
 
         Ok(new_id)
     }
@@ -172,6 +177,11 @@ impl MedicalDeviceRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::DeviceImplants(device_id), &device_implants);
+
+        env.events().publish(
+            (Symbol::new(&env, "implant_recorded"),),
+            (new_id, device_id, patient_id, implant_date),
+        );
 
         Ok(new_id)
     }
@@ -258,6 +268,11 @@ impl MedicalDeviceRegistry {
             .persistent()
             .set(&DataKey::ImplantRecord(implant_record_id), &record);
 
+        env.events().publish(
+            (Symbol::new(&env, "maintenance_recorded"),),
+            (new_m_id, implant_record_id, maintenance_type, maintenance_date),
+        );
+
         Ok(())
     }
 
@@ -304,7 +319,7 @@ impl MedicalDeviceRegistry {
             .persistent()
             .set(&DataKey::RecallInfo(new_id), &recall);
 
-        for device_id in device_ids {
+        for device_id in device_ids.iter() {
             let mut device_recalls: Vec<u64> = env
                 .storage()
                 .persistent()
@@ -315,6 +330,11 @@ impl MedicalDeviceRegistry {
                 .persistent()
                 .set(&DataKey::DeviceRecalls(device_id), &device_recalls);
         }
+
+        env.events().publish(
+            (Symbol::new(&env, "device_recall_issued"),),
+            (new_id, device_ids, severity),
+        );
 
         Ok(new_id)
     }
@@ -379,7 +399,7 @@ impl MedicalDeviceRegistry {
             .persistent()
             .set(&DataKey::RecallInfo(new_id), &recall);
 
-        for device_id in device_ids {
+        for device_id in device_ids.iter() {
             let mut device_recalls: Vec<u64> = env
                 .storage()
                 .persistent()
@@ -390,6 +410,11 @@ impl MedicalDeviceRegistry {
                 .persistent()
                 .set(&DataKey::DeviceRecalls(device_id), &device_recalls);
         }
+
+        env.events().publish(
+            (Symbol::new(&env, "regulator_recall_issued"),),
+            (new_id, device_ids, severity),
+        );
 
         Ok(new_id)
     }
@@ -480,6 +505,11 @@ impl MedicalDeviceRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::ImplantRecord(implant_record_id), &record);
+
+        env.events().publish(
+            (Symbol::new(&env, "implant_removed"),),
+            (implant_record_id, record.device_id, removal_date),
+        );
 
         Ok(())
     }
@@ -652,6 +682,11 @@ impl MedicalDeviceRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::DeviceWarranties(device_id), &warranties);
+
+        env.events().publish(
+            (Symbol::new(&env, "warranty_registered"),),
+            (warranty_id, device_id, warranty_expiration_date),
+        );
 
         Ok(warranty_id)
     }

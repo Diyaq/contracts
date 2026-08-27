@@ -170,6 +170,8 @@ pub enum Error {
     CounterUnavailable = 11,
     /// An addendum was submitted for an order with no final report yet.
     FinalReportNotFound = 12,
+    /// Radiologist cannot request peer review from themselves
+    SelfReviewNotAllowed = 13,
 }
 
 /// --------------------
@@ -555,6 +557,10 @@ impl ImagingRadiology {
         peer_radiologist: Address,
     ) -> Result<(), Error> {
         requesting_radiologist.require_auth();
+
+        if requesting_radiologist == peer_radiologist {
+            return Err(Error::SelfReviewNotAllowed);
+        }
 
         let order_key = DataKey::ImagingOrder(order_id);
         env.storage()

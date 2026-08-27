@@ -148,4 +148,8 @@ pub enum DataKey {
     ProviderSessionWindow(Address),
     /// Address of the external provider registry contract
     ProviderRegistryAddress,
+    /// Persistent counter for prescription IDs
+    PrescriptionCount,
+    /// rx_id -> PrescriptionRequest
+    Prescription(u64),
 }
