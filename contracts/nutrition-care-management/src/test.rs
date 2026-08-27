@@ -817,6 +817,23 @@ fn test_recommend_supplements_care_plan_not_found() {
     assert!(result.is_err());
 }
 
+#[test]
+fn test_recommend_supplements_rejects_unauthorized_dietitian() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+    let stranger = Address::generate(&env);
+
+    let result = client.try_recommend_supplements(
+        &care_plan_id,
+        &stranger,
+        &symbol_short!("zinc"),
+        &String::from_str(&env, "15 mg/day"),
+        &String::from_str(&env, "Wound healing support"),
+    );
+    assert!(result.is_err());
+}
+
 // -----------------------------------------------------------------------
 // evaluate_nutrition_outcomes
 // -----------------------------------------------------------------------

@@ -650,6 +650,10 @@ impl NutritionCareContract {
 
         load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
 
+        if !is_provider_authorized(&env, care_plan_id, &dietitian_id) {
+            return Err(Error::ProviderNotAuthorized);
+        }
+
         let rec = SupplementRecommendation {
             care_plan_id,
             dietitian_id: dietitian_id.clone(),
