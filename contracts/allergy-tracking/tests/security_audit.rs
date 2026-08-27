@@ -88,17 +88,71 @@ fn attack_severity_downgrade_without_auth() {
         &true,
     );
 
-    // With valid auth in this harness, a different provider can downgrade severity.
-    // This is a permissive behavior check, not an auth failure check.
-    client.update_allergy_severity(
+    // An attacker who is neither the recording provider, a provider granted
+    // access by the patient, nor the patient themselves must be rejected.
+    let result = client.try_update_allergy_severity(
         &allergy_id,
         &attacker,
         &Symbol::new(&env, "mild"),
         &String::from_str(&env, "Malicious downgrade"),
     );
+    assert_eq!(
+        result,
+        Err(Ok(allergy_tracking::Error::Unauthorized)),
+        "uninvolved caller must not be able to downgrade severity"
+    );
 
-    let updated = client.get_allergy(&allergy_id);
-    assert_eq!(updated.severity, allergy_tracking::Severity::Mild);
+    // Severity must remain unchanged after the rejected attempt.
+    let updated = client.get_allergy(&allergy_id, &patient);
+    assert_eq!(updated.severity, allergy_tracking::Severity::LifeThreatening);
+}
+
+/// ATTACK 3b: Resolution Manipulation
+/// Attempt to resolve a life-threatening allergy as an uninvolved third party
+#[test]
+fn attack_resolve_without_auth() {
+    let env = Env::default();
+    env.mock_all_auths(); // Auth for setup only
+    env.ledger().set_timestamp(10_000);
+
+    let contract_id = env.register(AllergyTrackingContract, ());
+    let client = AllergyTrackingContractClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    let mut reactions = Vec::new(&env);
+    reactions.push_back(String::from_str(&env, "anaphylaxis"));
+
+    let allergy_id = client.record_allergy(
+        &patient,
+        &provider,
+        &String::from_str(&env, "Penicillin"),
+        &Symbol::new(&env, "medication"),
+        &reactions,
+        &Symbol::new(&env, "life_threatening"),
+        &None,
+        &true,
+    );
+
+    // An uninvolved attacker must not be able to mark the allergy resolved.
+    let result = client.try_resolve_allergy(
+        &allergy_id,
+        &attacker,
+        &9_000u64,
+        &String::from_str(&env, "Malicious resolution"),
+    );
+    assert_eq!(
+        result,
+        Err(Ok(allergy_tracking::Error::Unauthorized)),
+        "uninvolved caller must not be able to resolve an allergy"
+    );
+
+    // Record must remain active/unresolved after the rejected attempt.
+    let updated = client.get_allergy(&allergy_id, &patient);
+    assert_eq!(updated.status, allergy_tracking::AllergyStatus::Active);
+    assert!(updated.resolution_date.is_none());
 }
 
 /// ATTACK 4: Data Tampering via Duplicate
@@ -340,7 +394,7 @@ fn attack_nonexistent_allergy_access() {
     let provider = Address::generate(&env);
 
     // Attempt to get non-existent allergy
-    let result1 = client.try_get_allergy(&999999);
+    let result1 = client.try_get_allergy(&999999, &provider);
     assert!(result1.is_err());
 
     // Attempt to update non-existent allergy
@@ -556,7 +610,11 @@ fn attack_race_condition_severity_updates() {
         &true,
     );
 
-    // Two providers try to update severity simultaneously
+    // provider2 is not the recording provider, so the patient must explicitly
+    // grant access before provider2's update is authorized.
+    client.grant_access(&patient, &provider2);
+
+    // Two authorized providers try to update severity simultaneously
     client.update_allergy_severity(
         &allergy_id,
         &provider1,
