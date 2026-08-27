@@ -1732,14 +1732,14 @@ fn test_hijacked_admin_rejected_by_downstream_functions() {
 }
 
 #[test]
-fn test_initialize_contraindication_admin_once() {
+fn test_init_contraindication_admin_once() {
     let (env, _, _, _) = setup();
     let client = register(&env);
     let admin = Address::generate(&env);
     let attacker = Address::generate(&env);
 
-    client.initialize_contraindication_admin(&admin);
+    client.init_contraindication_admin(&admin);
 
-    let result = client.try_initialize_contraindication_admin(&attacker);
+    let result = client.try_init_contraindication_admin(&attacker);
     assert!(result.is_err());
 }
