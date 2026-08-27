@@ -1269,3 +1269,119 @@ fn test_mark_goal_achieved_and_resolve_barrier_allowed_on_closed_plan() {
         &1_150_000u64,
     );
 }
+
+// -----------------------------------------------------------------------
+// is_bound_to_plan enforcement tests (#731)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_add_care_goal_rejects_unbound_caller() {
+    let (env, provider, patient) = setup();
+    let (_, client, plan_id) = register_and_create_plan(&env);
+    let unbound_address = Address::generate(&env);
+
+    let result = client.try_add_care_goal(
+        &plan_id,
+        &unbound_address,
+        &String::from_str(&env, "Test Goal"),
+        &None,
+        &1_100_000u64,
+        &Symbol::new(&env, "high"),
+    );
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_add_intervention_rejects_unbound_caller() {
+    let (env, provider, patient) = setup();
+    let (_, client, plan_id) = register_and_create_plan(&env);
+    let unbound_address = Address::generate(&env);
+
+    let result = client.try_add_intervention(
+        &plan_id,
+        &unbound_address,
+        &Symbol::new(&env, "medication"),
+        &String::from_str(&env, "Take medication"),
+        &String::from_str(&env, "Daily"),
+        &Symbol::new(&env, "provider"),
+    );
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_add_barrier_rejects_unbound_caller() {
+    let (env, provider, patient) = setup();
+    let (_, client, plan_id) = register_and_create_plan(&env);
+    let unbound_address = Address::generate(&env);
+
+    let result = client.try_add_barrier(
+        &plan_id,
+        &unbound_address,
+        &Symbol::new(&env, "social"),
+        &String::from_str(&env, "Lack of transportation"),
+        &1_050_000u64,
+    );
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_schedule_care_plan_review_rejects_unbound_caller() {
+    let (env, provider, patient) = setup();
+    let (_, client, plan_id) = register_and_create_plan(&env);
+    let unbound_address = Address::generate(&env);
+
+    let result = client.try_schedule_care_plan_review(
+        &plan_id,
+        &unbound_address,
+        &1_100_000u64,
+        &Symbol::new(&env, "quarterly"),
+    );
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_mark_goal_achieved_rejects_unbound_caller() {
+    let (env, provider, patient) = setup();
+    let (_, client, plan_id) = register_and_create_plan(&env);
+    let unbound_address = Address::generate(&env);
+
+    let goal_id = client.add_care_goal(
+        &plan_id,
+        &provider,
+        &String::from_str(&env, "Test Goal"),
+        &None,
+        &1_100_000u64,
+        &Symbol::new(&env, "high"),
+    );
+
+    let result = client.try_mark_goal_achieved(
+        &goal_id,
+        &unbound_address,
+        &1_100_000u64,
+        &String::from_str(&env, "Goal achieved"),
+    );
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_resolve_barrier_rejects_unbound_caller() {
+    let (env, provider, patient) = setup();
+    let (_, client, plan_id) = register_and_create_plan(&env);
+    let unbound_address = Address::generate(&env);
+
+    let barrier_id = client.add_barrier(
+        &plan_id,
+        &provider,
+        &Symbol::new(&env, "social"),
+        &String::from_str(&env, "Lack of transportation"),
+        &1_050_000u64,
+    );
+
+    let result = client.try_resolve_barrier(
+        &barrier_id,
+        &unbound_address,
+        &String::from_str(&env, "Provided transportation"),
+        &1_100_000u64,
+    );
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}

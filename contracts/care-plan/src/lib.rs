@@ -107,6 +107,9 @@ impl CarePlanContract {
         provider_id.require_auth();
 
         let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+        if !is_bound_to_plan(&env, &plan, &provider_id) {
+            return Err(Error::Unauthorized);
+        }
         if matches!(
             plan.status,
             CarePlanStatus::Completed | CarePlanStatus::Discontinued
@@ -153,6 +156,9 @@ impl CarePlanContract {
         provider_id.require_auth();
 
         let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+        if !is_bound_to_plan(&env, &plan, &provider_id) {
+            return Err(Error::Unauthorized);
+        }
         if matches!(
             plan.status,
             CarePlanStatus::Completed | CarePlanStatus::Discontinued
@@ -242,6 +248,10 @@ impl CarePlanContract {
         provider_id.require_auth();
 
         let mut goal = load_goal(&env, goal_id).ok_or(Error::GoalNotFound)?;
+        let plan = load_care_plan(&env, goal.care_plan_id).ok_or(Error::CarePlanNotFound)?;
+        if !is_bound_to_plan(&env, &plan, &provider_id) {
+            return Err(Error::Unauthorized);
+        }
 
         if matches!(goal.status, GoalStatus::Achieved) {
             return Err(Error::GoalAlreadyAchieved);
@@ -276,6 +286,9 @@ impl CarePlanContract {
         reporter.require_auth();
 
         let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+        if !is_bound_to_plan(&env, &plan, &reporter) {
+            return Err(Error::Unauthorized);
+        }
         if matches!(
             plan.status,
             CarePlanStatus::Completed | CarePlanStatus::Discontinued
@@ -324,6 +337,10 @@ impl CarePlanContract {
         provider_id.require_auth();
 
         let mut barrier = load_barrier(&env, barrier_id).ok_or(Error::BarrierNotFound)?;
+        let plan = load_care_plan(&env, barrier.care_plan_id).ok_or(Error::CarePlanNotFound)?;
+        if !is_bound_to_plan(&env, &plan, &provider_id) {
+            return Err(Error::Unauthorized);
+        }
 
         if barrier.resolved {
             return Err(Error::BarrierAlreadyResolved);
@@ -355,6 +372,9 @@ impl CarePlanContract {
         provider_id.require_auth();
 
         let plan = load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+        if !is_bound_to_plan(&env, &plan, &provider_id) {
+            return Err(Error::Unauthorized);
+        }
         if matches!(
             plan.status,
             CarePlanStatus::Completed | CarePlanStatus::Discontinued
