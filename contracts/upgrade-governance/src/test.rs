@@ -363,18 +363,18 @@ fn test_execute_cancelled_proposal_returns_error() {
 }
 
 #[test]
-fn test_cancel_approved_proposal_by_non_proposer_returns_error() {
+fn test_cancel_approved_proposal_by_non_signer_returns_error() {
     let (env, signers, client) = setup(3, 2);
     let s0 = signers.get(0).unwrap();
     let s1 = signers.get(1).unwrap();
-    let s2 = signers.get(2).unwrap();
+    let stranger = Address::generate(&env);
     let metadata = release_metadata(&env);
     let metadata_hash = metadata_hash(&env, &metadata);
     let id = client.propose_upgrade(&s0, &dummy_hash(&env), &metadata, &metadata_hash, &0u32);
     client.vote_upgrade(&s1, &id);
-    // Proposal is now Approved; s2 (not the proposer) cannot cancel
-    let err = client.try_cancel_upgrade(&s2, &id).unwrap_err().unwrap();
-    assert_eq!(err, Error::NotAuthorized);
+    // Proposal is now Approved; stranger (not a signer) cannot cancel
+    let err = client.try_cancel_upgrade(&stranger, &id).unwrap_err().unwrap();
+    assert_eq!(err, Error::NotASigner);
 }
 
 // ── execute: under threshold ──────────────────────────────────────────────────
@@ -575,4 +575,25 @@ fn test_approve_signer_change_expired_returns_error() {
         .unwrap_err()
         .unwrap();
     assert_eq!(err, Error::Expired);
+}
+
+#[test]
+fn test_propose_signer_change_overwrites_expired_proposal() {
+    let (env, signers, client) = setup(3, 3);
+    let s0 = signers.get(0).unwrap();
+    let new_signer = Address::generate(&env);
+    let new_signer2 = Address::generate(&env);
+
+    client.propose_signer_change(&s0, &SignerChangeKind::Add, &new_signer);
+
+    // Advancing the timestamp by VOTING_WINDOW + 1 should expire the proposal
+    env.ledger().with_mut(|li| {
+        li.timestamp += VOTING_WINDOW + 1;
+    });
+
+    // Proposing again should succeed and overwrite
+    client.propose_signer_change(&s0, &SignerChangeKind::Add, &new_signer2);
+    let sp = client.get_signer_proposal();
+    assert_eq!(sp.target, new_signer2);
+    assert_eq!(sp.status, SignerProposalStatus::Pending);
 }

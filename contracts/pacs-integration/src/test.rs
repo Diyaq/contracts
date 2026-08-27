@@ -714,7 +714,7 @@ fn test_acknowledge_critical_finding_only_by_ordering_provider() {
 }
 
 #[test]
-fn test_list_unacknowledged_critical_findings() {
+fn test_list_unack_crit_findings() {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1000);
@@ -775,7 +775,31 @@ fn test_list_unacknowledged_critical_findings() {
     client.acknowledge_critical_finding(&sid2, &provider, &2000u64);
 
     // Query unacknowledged findings older than 500 seconds
-    let unacknowledged = client.list_unacknowledged_critical_findings(&provider, &500u64);
-    // Both studies should be in the result if reported more than 500 seconds ago
-    assert!(unacknowledged.len() > 0);
+    let unacknowledged = client.list_unack_crit_findings(&provider, &500u64);
+    // Only the first study (sid1) should be in the result since the second study is acknowledged
+    assert_eq!(unacknowledged.len(), 1);
+    assert_eq!(unacknowledged.get(0).unwrap(), sid1);
+}
+
+#[test]
+fn test_create_imaging_cd_unauthorized_provider() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, patient, provider) = setup(&env);
+
+    let s1 = register_ct_chest(&env, &client, &patient, &provider);
+
+    let mut ids: Vec<u64> = Vec::new(&env);
+    ids.push_back(s1);
+
+    let stranger = Address::generate(&env);
+
+    let result = client.try_create_imaging_cd(
+        &ids,
+        &patient,
+        &stranger,
+        &String::from_str(&env, "TOKEN-XYZ"),
+        &1_700_002_000_u64,
+    );
+    assert!(result.is_err());
 }
