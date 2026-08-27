@@ -45,7 +45,7 @@ impl HospitalDischargeContract {
     /// Initialize the contract with a hospital registry address
     pub fn initialize(env: Env, hospital_registry: Address) -> Result<(), Error> {
         hospital_registry.require_auth();
-        save_hospital_registry(&env, &hospital_registry);
+        set_hospital_registry(&env, &hospital_registry);
         Ok(())
     }
 
