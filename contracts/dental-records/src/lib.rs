@@ -383,6 +383,7 @@ impl DentalRecordsContract {
         dosage_instructions: String,
     ) -> Result<u64, Error> {
         dentist_id.require_auth();
+        patient_id.require_auth();
 
         let count = safe_increment(&env, &DataKey::RxCount);
 

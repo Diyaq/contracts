@@ -33,7 +33,7 @@ impl MockEmergencyMedicalInfo {
         alert_type: Symbol,
         _alert_text_hash: BytesN<32>,
         severity: Symbol,
-    ) {
+    ) -> Result<(), soroban_sdk::Error> {
         let alert = CrisisAlertEvent {
             patient_id: patient_id.clone(),
             provider_id,
@@ -49,6 +49,7 @@ impl MockEmergencyMedicalInfo {
             .unwrap_or(Vec::new(&env));
         alerts.push_back(alert);
         env.storage().persistent().set(&key, &alerts);
+        Ok(())
     }
 
     pub fn get_alert_count(env: Env, patient_id: Address) -> u32 {
@@ -78,6 +79,8 @@ fn test_conduct_assessment_and_record_scores() {
 
     grant_consent(&env, &client, &patient_id, "assessment", &provider_id);
     grant_consent(&env, &client, &patient_id, "suicide_risk", &provider_id);
+    grant_consent(&env, &client, &patient_id, "phq9", &provider_id);
+    grant_consent(&env, &client, &patient_id, "gad7", &provider_id);
 
     let concerns = vec![&env, String::from_str(&env, "anxiety")];
     let tools = vec![&env, Symbol::new(&env, "PHQ9")];
@@ -123,6 +126,51 @@ fn test_conduct_assessment_and_record_scores() {
         &protective_factors,
         &true,
     );
+}
+
+#[test]
+fn test_record_scores_reject_uninvolved_provider_without_consent() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MentalHealthContract, ());
+    let client = MentalHealthContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    // Never granted consent for "phq9" or "gad7" -- merely signing the call
+    // must not be enough to overwrite a patient's screening scores.
+    let uninvolved_provider = Address::generate(&env);
+
+    grant_consent(&env, &client, &patient_id, "assessment", &provider_id);
+
+    let assessment_id = client.conduct_mental_health_assessment(
+        &patient_id,
+        &provider_id,
+        &1690000000,
+        &Symbol::new(&env, "initial"),
+        &vec![&env, String::from_str(&env, "anxiety")],
+        &vec![&env, Symbol::new(&env, "PHQ9")],
+        &BytesN::from_array(&env, &[0; 32]),
+    );
+
+    let phq9_result = client.try_record_phq9_score(
+        &assessment_id,
+        &uninvolved_provider,
+        &15,
+        &vec![&env, 3, 3, 3, 3, 3],
+        &1690000000,
+    );
+    assert_eq!(phq9_result, Err(Ok(Error::RequiresExplicitConsent)));
+
+    let gad7_result = client.try_record_gad7_score(
+        &assessment_id,
+        &uninvolved_provider,
+        &12,
+        &vec![&env, 2, 2, 2, 2, 2, 2],
+        &1690000000,
+    );
+    assert_eq!(gad7_result, Err(Ok(Error::RequiresExplicitConsent)));
 }
 
 #[test]
@@ -333,6 +381,7 @@ fn test_high_risk_assessment_triggers_crisis_escalation() {
     grant_consent(&env, &mental_health, &patient_id, "assessment", &provider_id);
     grant_consent(&env, &mental_health, &patient_id, "suicide_risk", &provider_id);
     grant_consent(&env, &mental_health, &patient_id, "crisis_escalation", &provider_id);
+    grant_consent(&env, &mental_health, &patient_id, "phq9", &provider_id);
 
     // Create an assessment
     let assessment_id = mental_health.conduct_mental_health_assessment(
