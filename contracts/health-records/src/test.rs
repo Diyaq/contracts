@@ -1325,4 +1325,91 @@ mod consent_scope_tests {
         let version1 = client.get_record_version(&provider, &record_id, &1u32);
         assert_eq!(version1.record_description, rdesc);
     }
+
+    #[test]
+    fn test_update_record_removes_stale_category_index() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, patient, provider) = setup(&env);
+
+        client.grant_consent(&patient, &provider, &full_scope());
+
+        let reference = encrypted_ref(&env, 1);
+        let initial_category = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "Initial LAB"));
+
+        let record_id = client.create_record(&patient, &provider, &reference, &initial_category, &rdesc, &policy(&env));
+
+        let initial_records = client.get_records_by_category(&initial_category);
+        assert_eq!(initial_records.len(), 1);
+        assert_eq!(initial_records.get(0).unwrap(), record_id);
+
+        let new_reference = encrypted_ref(&env, 2);
+        let new_category = RecordCategory::Imaging;
+        client.update_record(
+            &provider,
+            &record_id,
+            &new_reference,
+            &new_category,
+            &Some(String::from_str(&env, "Updated to Imaging")),
+            &policy(&env),
+        );
+
+        let old_category_records = client.get_records_by_category(&initial_category);
+        assert_eq!(old_category_records.len(), 0, "old category should not contain the record after category change");
+
+        let new_category_records = client.get_records_by_category(&new_category);
+        assert_eq!(new_category_records.len(), 1);
+        assert_eq!(new_category_records.get(0).unwrap(), record_id);
+    }
+
+    #[test]
+    fn test_nonce_replay_protection() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, patient, provider) = setup(&env);
+
+        client.grant_consent(&patient, &provider, &full_scope());
+
+        let reference = encrypted_ref(&env, 1);
+        let rtype = RecordCategory::Lab;
+        let rdesc = Some(String::from_str(&env, "Test record"));
+        let nonce: u64 = 1;
+
+        let record_id = client.create_record(
+            &patient,
+            &provider,
+            &reference,
+            &rtype,
+            &rdesc,
+            &policy(&env),
+            &nonce,
+        );
+        assert!(record_id > 0);
+
+        let new_reference = encrypted_ref(&env, 2);
+        let nonce_too_old: u64 = 1;
+        let result = client.try_update_record(
+            &provider,
+            &record_id,
+            &new_reference,
+            &rtype,
+            &Some(String::from_str(&env, "Updated")),
+            &policy(&env),
+            &nonce_too_old,
+        );
+        assert_eq!(result, Err(Ok(Error::StaleNonce)), "replayed nonce should be rejected");
+
+        let new_nonce: u64 = 2;
+        let updated_version = client.update_record(
+            &provider,
+            &record_id,
+            &new_reference,
+            &rtype,
+            &Some(String::from_str(&env, "Updated")),
+            &policy(&env),
+            &new_nonce,
+        );
+        assert_eq!(updated_version, 2);
+    }
 }

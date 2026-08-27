@@ -141,6 +141,23 @@ fn index_record_by_category(env: &Env, category: RecordCategory, record_id: u64)
     env.storage().persistent().set(&key, &ids);
 }
 
+fn remove_record_from_category_index(env: &Env, category: RecordCategory, record_id: u64) {
+    let key = DataKey::CategoryIndex(category);
+    if let Some(ids) = env.storage().persistent().get::<DataKey, Vec<u64>>(&key) {
+        let mut filtered = Vec::new(env);
+        for id in ids.iter() {
+            if id != record_id {
+                filtered.push_back(id);
+            }
+        }
+        if filtered.is_empty() {
+            env.storage().persistent().remove(&key);
+        } else {
+            env.storage().persistent().set(&key, &filtered);
+        }
+    }
+}
+
 fn compute_hash(
     env: &Env,
     record_id: u64,
@@ -203,10 +220,12 @@ impl HealthRecords {
         patient: Address,
         provider: Address,
         scope: ConsentScope,
+        patient_nonce: u64,
     ) -> Result<(), Error> {
         validate_nonzero_address(&patient).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         patient.require_auth();
+        Self::verify_and_increment_nonce(&env, &patient, patient_nonce)?;
         env.storage().persistent().set(
             &DataKey::Consent(patient.clone(), provider.clone()),
             &scope,
@@ -230,10 +249,11 @@ impl HealthRecords {
     }
 
     /// Patient revokes all consent for a provider.
-    pub fn revoke_consent(env: Env, patient: Address, provider: Address) -> Result<(), Error> {
+    pub fn revoke_consent(env: Env, patient: Address, provider: Address, patient_nonce: u64) -> Result<(), Error> {
         validate_nonzero_address(&patient).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         patient.require_auth();
+        Self::verify_and_increment_nonce(&env, &patient, patient_nonce)?;
         env.storage()
             .persistent()
             .remove(&DataKey::Consent(patient.clone(), provider.clone()));
@@ -265,8 +285,9 @@ impl HealthRecords {
     /// Revokes consent for every provider that was ever granted access.
     /// Only callable by the patient themselves (they must auth before
     /// deregistering from patient-registry).
-    pub fn deregister_patient(env: Env, patient: Address) {
+    pub fn deregister_patient(env: Env, patient: Address, patient_nonce: u64) -> Result<(), Error> {
         patient.require_auth();
+        Self::verify_and_increment_nonce(&env, &patient, patient_nonce)?;
         let idx_key = DataKey::PatientProviders(patient.clone());
         let providers: Vec<Address> = env
             .storage()
@@ -279,6 +300,7 @@ impl HealthRecords {
                 .remove(&DataKey::Consent(patient.clone(), provider));
         }
         env.storage().persistent().remove(&idx_key);
+        Ok(())
     }
 
     /// Create a record. Requires both patient and provider auth, plus active write consent.
@@ -290,11 +312,13 @@ impl HealthRecords {
         record_category: RecordCategory,
         record_description: Option<String>,
         policy: PolicyMetadata,
+        provider_nonce: u64,
     ) -> Result<u64, Error> {
         validate_nonzero_address(&patient).map_err(|_| Error::InvalidAddress)?;
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         patient.require_auth();
         provider.require_auth();
+        Self::verify_and_increment_nonce(&env, &provider, provider_nonce)?;
         validate_encrypted_ref(&encrypted_ref).map_err(|_| Error::InvalidEncryptedEnvelope)?;
         validate_policy_metadata(&policy).map_err(|_| Error::InvalidPolicyMetadata)?;
 
@@ -368,9 +392,11 @@ impl HealthRecords {
         env: Env,
         provider: Address,
         records: Vec<RecordInput>,
+        provider_nonce: u64,
     ) -> Result<Vec<u64>, Error> {
         validate_nonzero_address(&provider).map_err(|_| Error::InvalidAddress)?;
         provider.require_auth();
+        Self::verify_and_increment_nonce(&env, &provider, provider_nonce)?;
 
         let registry_addr: Address = env.storage().instance().get(&DataKey::ProviderRegistry).unwrap();
         let provider_client = ProviderRegistryClient::new(&env, &registry_addr);
@@ -513,11 +539,13 @@ impl HealthRecords {
         new_record_category: RecordCategory,
         new_record_description: Option<String>,
         new_policy: PolicyMetadata,
+        caller_nonce: u64,
     ) -> Result<u32, Error> {
         validate_nonzero_address(&caller).map_err(|_| Error::InvalidAddress)?;
         validate_encrypted_ref(&new_encrypted_ref).map_err(|_| Error::InvalidEncryptedEnvelope)?;
         validate_policy_metadata(&new_policy).map_err(|_| Error::InvalidPolicyMetadata)?;
         caller.require_auth();
+        Self::verify_and_increment_nonce(&env, &caller, caller_nonce)?;
 
         let mut record: MedicalRecord = env
             .storage()
@@ -551,11 +579,9 @@ impl HealthRecords {
             timestamp,
         );
 
-        // Note: this only adds the record to the new category's index; it
-        // doesn't remove it from the old one (Soroban's Vec has no O(1)
-        // remove-by-value), so a record that changes category will appear
-        // under both until/unless that's addressed separately.
+        // When category changes, remove from old index and add to new index.
         if new_record_category != record.record_category {
+            remove_record_from_category_index(&env, record.record_category, record_id);
             index_record_by_category(&env, new_record_category, record_id);
         }
 
@@ -620,9 +646,11 @@ impl HealthRecords {
         error_code: u32,
         description: String,
         correlation_id: Option<BytesN<32>>,
+        reporter_nonce: u64,
     ) -> Result<u64, Error> {
         validate_nonzero_address(&reporter).map_err(|_| Error::InvalidAddress)?;
         reporter.require_auth();
+        Self::verify_and_increment_nonce(&env, &reporter, reporter_nonce)?;
         Ok(capture_incident(
             &env,
             IncidentSeverity::High,

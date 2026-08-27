@@ -26,7 +26,7 @@
 
 pub mod interface;
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env};
 
 pub use interface::{
     verify_eligibility_proof, PlaceholderZkProofVerifier, PublicInputs, RUST_INTERFACE_VERSION,
@@ -36,7 +36,15 @@ pub use interface::{
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
+    Admin,
     ZkEligibilityContract,
+}
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    AlreadyInitialized = 1,
 }
 
 #[contract]
@@ -44,10 +52,20 @@ pub struct ZkEligibilityVerifier;
 
 #[contractimpl]
 impl ZkEligibilityVerifier {
-    pub fn initialize(env: Env, zk_eligibility_contract: Address) {
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        zk_eligibility_contract: Address,
+    ) -> Result<(), Error> {
+        if env.storage().persistent().has(&DataKey::ZkEligibilityContract) {
+            return Err(Error::AlreadyInitialized);
+        }
+        admin.require_auth();
+        env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage()
             .persistent()
             .set(&DataKey::ZkEligibilityContract, &zk_eligibility_contract);
+        Ok(())
     }
 
     pub fn check_eligibility(env: Env, subject: Address) -> bool {
@@ -60,3 +78,6 @@ impl ZkEligibilityVerifier {
         client.is_eligible(&subject)
     }
 }
+
+#[cfg(test)]
+mod test;

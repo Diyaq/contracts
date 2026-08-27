@@ -817,6 +817,23 @@ fn test_recommend_supplements_care_plan_not_found() {
     assert!(result.is_err());
 }
 
+#[test]
+fn test_recommend_supplements_rejects_unauthorized_dietitian() {
+    let (env, patient, dietitian, _) = setup();
+    let client = register(&env);
+    let (_, care_plan_id) = create_plan(&env, &client, &patient, &dietitian);
+    let stranger = Address::generate(&env);
+
+    let result = client.try_recommend_supplements(
+        &care_plan_id,
+        &stranger,
+        &symbol_short!("zinc"),
+        &String::from_str(&env, "15 mg/day"),
+        &String::from_str(&env, "Wound healing support"),
+    );
+    assert!(result.is_err());
+}
+
 // -----------------------------------------------------------------------
 // evaluate_nutrition_outcomes
 // -----------------------------------------------------------------------
@@ -1732,14 +1749,14 @@ fn test_hijacked_admin_rejected_by_downstream_functions() {
 }
 
 #[test]
-fn test_initialize_contraindication_admin_once() {
+fn test_init_contraindication_admin_once() {
     let (env, _, _, _) = setup();
     let client = register(&env);
     let admin = Address::generate(&env);
     let attacker = Address::generate(&env);
 
-    client.initialize_contraindication_admin(&admin);
+    client.init_contraindication_admin(&admin);
 
-    let result = client.try_initialize_contraindication_admin(&attacker);
+    let result = client.try_init_contraindication_admin(&attacker);
     assert!(result.is_err());
 }

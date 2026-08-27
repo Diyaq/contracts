@@ -2,8 +2,45 @@
 #![allow(deprecated)]
 
 use crate::contract::{ReferralContract, ReferralContractClient};
+use crate::types::Error;
 use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol, Vec, vec};
 use provider_registry::{ProviderRegistry, ProviderRegistryClient};
+
+/// Registers a `ProviderRegistry` contract, initializes it with `admin`, and
+/// registers `referral_contract_id` against it, returning the registry
+/// client so individual tests can register whichever provider addresses
+/// they need via `register_provider`.
+fn setup_provider_registry<'a>(
+    env: &'a Env,
+    admin: &Address,
+    referral_contract_id: &Address,
+) -> ProviderRegistryClient<'a> {
+    let provider_registry_id = env.register(ProviderRegistry, ());
+    let pr_client = ProviderRegistryClient::new(env, &provider_registry_id);
+    pr_client.initialize(admin);
+
+    let referral_client = ReferralContractClient::new(env, referral_contract_id);
+    referral_client.initialize(&provider_registry_id);
+
+    pr_client
+}
+
+/// Registers `provider` as an active, non-expired provider in the given
+/// `ProviderRegistry`, matching the shape expected by `register_provider`.
+fn register_provider(env: &Env, pr_client: &ProviderRegistryClient, admin: &Address, provider: &Address) {
+    pr_client.register_provider(
+        admin,
+        provider,
+        &String::from_str(env, "Dr. Test"),
+        &String::from_str(env, "General"),
+        &String::from_str(env, "LIC000"),
+        &BytesN::from_array(env, &[9; 32]),
+        admin,
+        &BytesN::from_array(env, &[9; 32]),
+        &(env.ledger().timestamp() + 86400),
+        &BytesN::from_array(env, &[9; 32]),
+    );
+}
 
 #[test]
 fn test_referral_lifecycle() {
@@ -13,9 +50,14 @@ fn test_referral_lifecycle() {
     let contract_id = env.register(ReferralContract, ());
     let client = ReferralContractClient::new(&env, &contract_id);
 
+    let admin = Address::generate(&env);
     let referring_provider = Address::generate(&env);
     let patient_id = Address::generate(&env);
     let referred_to = Address::generate(&env);
+
+    let pr_client = setup_provider_registry(&env, &admin, &contract_id);
+    register_provider(&env, &pr_client, &admin, &referred_to);
+
     let specialty = Symbol::new(&env, "Cardio");
     let reason = String::from_str(&env, "Heart palpitations");
     let priority = Symbol::new(&env, "Urgent");
@@ -75,9 +117,13 @@ fn test_decline_and_update_status() {
     let contract_id = env.register(ReferralContract, ());
     let client = ReferralContractClient::new(&env, &contract_id);
 
+    let admin = Address::generate(&env);
     let referring_provider = Address::generate(&env);
     let patient_id = Address::generate(&env);
     let referred_to = Address::generate(&env);
+
+    let pr_client = setup_provider_registry(&env, &admin, &contract_id);
+    register_provider(&env, &pr_client, &admin, &referred_to);
 
     let referral_id = client.create_referral(
         &referring_provider,
@@ -106,6 +152,13 @@ fn test_decline_and_update_status() {
         &Vec::new(&env),
     );
 
+    // Must accept before it can be scheduled (Pending -> Accepted -> Scheduled)
+    client.update_referral_status(
+        &referral_id2,
+        &referred_to,
+        &Symbol::new(&env, "Accepted"),
+        &None,
+    );
     client.update_referral_status(
         &referral_id2,
         &referred_to,
@@ -122,9 +175,13 @@ fn test_auth_failures() {
     let contract_id = env.register(ReferralContract, ());
     let client = ReferralContractClient::new(&env, &contract_id);
 
+    let admin = Address::generate(&env);
     let referring_provider = Address::generate(&env);
     let patient_id = Address::generate(&env);
     let referred_to = Address::generate(&env);
+
+    let pr_client = setup_provider_registry(&env, &admin, &contract_id);
+    register_provider(&env, &pr_client, &admin, &referred_to);
 
     let referral_id = client.create_referral(
         &referring_provider,
@@ -209,6 +266,136 @@ fn test_provider_registration_verification() {
         &requested_services,
     );
     assert!(result.is_ok());
-    let referral_id_created = result.unwrap();
+    let referral_id_created = result.unwrap().unwrap();
     assert_eq!(referral_id_created, 1);
+}
+
+#[test]
+fn test_update_referral_status_rejects_pending_to_completed() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReferralContract, ());
+    let client = ReferralContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let referring_provider = Address::generate(&env);
+    let patient_id = Address::generate(&env);
+    let referred_to = Address::generate(&env);
+
+    let pr_client = setup_provider_registry(&env, &admin, &contract_id);
+    register_provider(&env, &pr_client, &admin, &referred_to);
+
+    let referral_id = client.create_referral(
+        &referring_provider,
+        &patient_id,
+        &referred_to,
+        &Symbol::new(&env, "Ortho"),
+        &String::from_str(&env, "Knee pain"),
+        &Symbol::new(&env, "Routine"),
+        &BytesN::from_array(&env, &[1; 32]),
+        &Vec::new(&env),
+    );
+
+    // A freshly created referral is Pending. Jumping straight to Completed
+    // must be rejected, since acceptance (and clinical work) is skipped.
+    let err = client
+        .try_update_referral_status(
+            &referral_id,
+            &referred_to,
+            &Symbol::new(&env, "Completed"),
+            &None,
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::InvalidStatusTransition);
+}
+
+#[test]
+fn test_update_referral_status_rejects_completed_to_pending() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReferralContract, ());
+    let client = ReferralContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let referring_provider = Address::generate(&env);
+    let patient_id = Address::generate(&env);
+    let referred_to = Address::generate(&env);
+
+    let pr_client = setup_provider_registry(&env, &admin, &contract_id);
+    register_provider(&env, &pr_client, &admin, &referred_to);
+
+    let referral_id = client.create_referral(
+        &referring_provider,
+        &patient_id,
+        &referred_to,
+        &Symbol::new(&env, "Ortho"),
+        &String::from_str(&env, "Knee pain"),
+        &Symbol::new(&env, "Routine"),
+        &BytesN::from_array(&env, &[1; 32]),
+        &Vec::new(&env),
+    );
+
+    // Legally progress the referral all the way to Completed.
+    client.update_referral_status(&referral_id, &referred_to, &Symbol::new(&env, "Accepted"), &None);
+    client.update_referral_status(&referral_id, &referred_to, &Symbol::new(&env, "Completed"), &None);
+
+    // Reverting a Completed referral back to Pending must be rejected,
+    // otherwise the audit trail is corrupted.
+    let err = client
+        .try_update_referral_status(
+            &referral_id,
+            &referred_to,
+            &Symbol::new(&env, "Pending"),
+            &None,
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, Error::InvalidStatusTransition);
+}
+
+#[test]
+fn test_update_referral_status_allows_legal_transitions() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ReferralContract, ());
+    let client = ReferralContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let referring_provider = Address::generate(&env);
+    let patient_id = Address::generate(&env);
+    let referred_to = Address::generate(&env);
+
+    let pr_client = setup_provider_registry(&env, &admin, &contract_id);
+    register_provider(&env, &pr_client, &admin, &referred_to);
+
+    let referral_id = client.create_referral(
+        &referring_provider,
+        &patient_id,
+        &referred_to,
+        &Symbol::new(&env, "Ortho"),
+        &String::from_str(&env, "Knee pain"),
+        &Symbol::new(&env, "Routine"),
+        &BytesN::from_array(&env, &[1; 32]),
+        &Vec::new(&env),
+    );
+
+    // Pending -> Accepted is a legal transition and should succeed.
+    client.update_referral_status(
+        &referral_id,
+        &referred_to,
+        &Symbol::new(&env, "Accepted"),
+        &None,
+    );
+
+    // Accepted -> Scheduled is also a legal transition and should succeed.
+    client.update_referral_status(
+        &referral_id,
+        &referred_to,
+        &Symbol::new(&env, "Scheduled"),
+        &None,
+    );
 }

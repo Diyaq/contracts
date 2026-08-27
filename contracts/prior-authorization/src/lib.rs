@@ -913,6 +913,17 @@ impl PriorAuthorizationContract {
     ) -> Result<u32, Error> {
         insurer_id.require_auth();
 
+        // Cross-check that the insurer is actually registered in the insurer-registry (#734)
+        let insurer_registry_id: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::InsurerRegistryId)
+            .ok_or(Error::NotInitialized)?;
+        let registry = InsurerRegistryClient::new(&env, &insurer_registry_id);
+        if !registry.is_insurer_active(&insurer_id) {
+            return Err(Error::Unauthorized);
+        }
+
         let overdue_ids = get_overdue_auths(&env);
         let reviewer_ids = load_insurer_reviewers(&env, &insurer_id);
 
@@ -929,6 +940,14 @@ impl PriorAuthorizationContract {
                 Some(r) => r,
                 None => continue,
             };
+
+            // Skip requests that belong to a different insurer (#734). The
+            // overdue list is shared across all insurers, so a foreign
+            // insurer's request must be left completely untouched — not
+            // reassigned and not removed from the overdue list.
+            if req.insurer_id != insurer_id {
+                continue;
+            }
 
             // Skip already-resolved or already-escalated requests.
             let unresolved = matches!(

@@ -3,7 +3,10 @@
 
 use crate::types::*;
 use crate::{DentalRecordsContract, DentalRecordsContractClient};
-use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, MockAuth, MockAuthInvoke},
+    Address, BytesN, Env, IntoVal, String, Symbol, Vec,
+};
 
 fn create_env() -> (Env, DentalRecordsContractClient<'static>) {
     let env = Env::default();
@@ -194,6 +197,35 @@ fn test_procedure_documentation_flow() {
         &1672617500,
         &consent_hash,
     );
+}
+
+#[test]
+fn test_prescribe_dental_medication_requires_patient_auth() {
+    let env = Env::default();
+    let contract_id = env.register(DentalRecordsContract, ());
+    let client = DentalRecordsContractClient::new(&env, &contract_id);
+
+    let patient_id = Address::generate(&env);
+    // An unrelated dentist who signs the call themselves, but the patient
+    // never authorized this prescription.
+    let dentist_id = Address::generate(&env);
+    let medication = String::from_str(&env, "Amoxicillin 500mg");
+    let indication = String::from_str(&env, "Prophylaxis");
+    let dosage = String::from_str(&env, "Take 1 cap 1hr prior to appt");
+
+    let result = client
+        .mock_auths(&[MockAuth {
+            address: &dentist_id,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "prescribe_dental_medication",
+                args: (&patient_id, &dentist_id, &medication, &indication, &dosage).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_prescribe_dental_medication(&patient_id, &dentist_id, &medication, &indication, &dosage);
+
+    assert!(result.is_err());
 }
 
 #[test]

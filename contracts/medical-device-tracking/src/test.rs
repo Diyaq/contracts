@@ -910,3 +910,150 @@ fn test_track_device_performance_patient_mismatch() {
     // Should fail with NotAuthorized error
     assert!(result.is_err());
 }
+
+// -----------------------------------------------------------------------
+// Event emission tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_device_registration_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = setup_client(&env);
+    let manufacturer = Address::generate(&env);
+
+    let device_id = client.register_device(
+        &manufacturer,
+        &String::from_str(&env, "UDI-12345-ABC"),
+        &Symbol::new(&env, "IMPLANT"),
+        &String::from_str(&env, "MedCorp"),
+        &String::from_str(&env, "MC-100"),
+        &String::from_str(&env, "LOT-001"),
+        &1690000000u64,
+        &None,
+        &dummy_hash(&env),
+        &DeviceExtras { warranty_expiration_date: None, maintenance_interval_days: None },
+    );
+    assert_eq!(device_id, 1);
+
+    let events = env.events().all();
+    assert!(!events.is_empty());
+}
+
+#[test]
+fn test_implant_device_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = setup_client(&env);
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    let manufacturer = Address::generate(&env);
+
+    let device_id = register_device_helper(&env, &client, &manufacturer);
+    let implant_id = client.implant_device(
+        &patient_id,
+        &device_id,
+        &provider_id,
+        &1700000000u64,
+        &String::from_str(&env, "Left Hip"),
+        &dummy_hash(&env),
+    );
+    assert_eq!(implant_id, 1);
+
+    let events = env.events().all();
+    assert!(!events.is_empty());
+}
+
+#[test]
+fn test_device_recall_emits_event_with_device_ids_and_severity() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = setup_client(&env);
+    let manufacturer = Address::generate(&env);
+
+    let device_id = register_device_helper(&env, &client, &manufacturer);
+    let mut device_ids: Vec<u64> = Vec::new(&env);
+    device_ids.push_back(device_id);
+
+    env.events().all().clear();
+
+    let recall_id = client.issue_device_recall(
+        &manufacturer,
+        &device_ids,
+        &String::from_str(&env, "Battery failure risk"),
+        &Symbol::new(&env, "CRITICAL"),
+        &1750000000u64,
+        &String::from_str(&env, "Immediate explantation required"),
+    );
+    assert_eq!(recall_id, 1);
+
+    let events = env.events().all();
+    assert!(!events.is_empty());
+}
+
+#[test]
+fn test_regulator_recall_emits_event_with_device_ids_and_severity() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let regulator = Address::generate(&env);
+    let client = setup_client(&env);
+    let manufacturer = Address::generate(&env);
+
+    let device_id = register_device_helper(&env, &client, &manufacturer);
+    let mut device_ids: Vec<u64> = Vec::new(&env);
+    device_ids.push_back(device_id);
+
+    env.events().all().clear();
+
+    let recall_id = client.issue_regulator_recall(
+        &regulator,
+        &device_ids,
+        &String::from_str(&env, "Emergency safety recall"),
+        &Symbol::new(&env, "CRITICAL"),
+        &1750000000u64,
+        &String::from_str(&env, "Immediate action required"),
+        &String::from_str(&env, "Nationwide"),
+    );
+    assert_eq!(recall_id, 1);
+
+    let events = env.events().all();
+    assert!(!events.is_empty());
+}
+
+#[test]
+fn test_remove_implant_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = setup_client(&env);
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    let manufacturer = Address::generate(&env);
+
+    let device_id = register_device_helper(&env, &client, &manufacturer);
+    let implant_id = client.implant_device(
+        &patient_id,
+        &device_id,
+        &provider_id,
+        &1700000000u64,
+        &String::from_str(&env, "Left Hip"),
+        &dummy_hash(&env),
+    );
+
+    env.events().all().clear();
+
+    client.remove_implant(
+        &implant_id,
+        &provider_id,
+        &1710000000u64,
+        &String::from_str(&env, "Device failure"),
+        &dummy_hash(&env),
+    );
+
+    let events = env.events().all();
+    assert!(!events.is_empty());
+}
