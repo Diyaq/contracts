@@ -2,7 +2,14 @@
 
 use super::*;
 use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, BytesN, Env, String, Vec};
-use shared::test_utils::{dummy_hash};
+
+/// Generate a dummy hash filled with a specific byte value.
+/// Local helper mirroring the pattern used by other contracts (e.g.
+/// provider-registry); `shared::test_utils` is `#[cfg(test)]`-gated and
+/// cannot be imported from another crate's test build.
+fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[byte; 32])
+}
 
 
 fn register_hospital_with_anchor(
@@ -470,6 +477,7 @@ fn test_revoke_hospital_credential_prevents_mutations() {
 
     // Even the hospital's own config updates should fail
     let result = client.try_update_departments(
+        &hospital_wallet,
         &hospital_wallet,
         &Vec::new(&env),
     );

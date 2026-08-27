@@ -97,7 +97,7 @@ fn attack_severity_downgrade_without_auth() {
         &String::from_str(&env, "Malicious downgrade"),
     );
 
-    let updated = client.get_allergy(&allergy_id);
+    let updated = client.get_allergy(&allergy_id, &patient);
     assert_eq!(updated.severity, allergy_tracking::Severity::Mild);
 }
 
@@ -340,7 +340,7 @@ fn attack_nonexistent_allergy_access() {
     let provider = Address::generate(&env);
 
     // Attempt to get non-existent allergy
-    let result1 = client.try_get_allergy(&999999);
+    let result1 = client.try_get_allergy(&999999, &provider);
     assert!(result1.is_err());
 
     // Attempt to update non-existent allergy

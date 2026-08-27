@@ -45,7 +45,7 @@ fn test_record_allergy_success() {
 
     assert_eq!(allergy_id, 0);
 
-    let allergy = client.get_allergy(&allergy_id);
+    let allergy = client.get_allergy(&allergy_id, &patient);
     assert_eq!(allergy.allergen, String::from_str(&env, "Penicillin"));
     assert_eq!(allergy.severity, Severity::Moderate);
     assert!(allergy.verified);
@@ -89,6 +89,7 @@ fn test_record_multiple_allergies() {
     assert_eq!(allergy_id1, 0);
     assert_eq!(allergy_id2, 1);
 
+    client.grant_access(&patient, &provider);
     let active_allergies = client.get_active_allergies(&patient, &provider);
     assert_eq!(active_allergies.len(), 2);
 }
@@ -153,7 +154,7 @@ fn test_update_allergy_severity() {
         &String::from_str(&env, "Patient had severe reaction during procedure"),
     );
 
-    let allergy = client.get_allergy(&allergy_id);
+    let allergy = client.get_allergy(&allergy_id, &patient);
     assert_eq!(allergy.severity, Severity::Severe);
 
     // Check severity history
@@ -190,11 +191,12 @@ fn test_resolve_allergy() {
         &String::from_str(&env, "False positive - patient tolerated shellfish"),
     );
 
-    let allergy = client.get_allergy(&allergy_id);
+    let allergy = client.get_allergy(&allergy_id, &patient);
     assert_eq!(allergy.status, AllergyStatus::Resolved);
     assert_eq!(allergy.resolution_date, Some(5000u64));
 
     // Active allergies should not include resolved ones
+    client.grant_access(&patient, &provider);
     let active_allergies = client.get_active_allergies(&patient, &provider);
     assert_eq!(active_allergies.len(), 0);
 }
@@ -257,7 +259,7 @@ fn test_check_drug_allergy_interaction_direct_match() {
 
     // Check for interaction with the same drug
     let warnings =
-        client.check_drug_allergy_interaction(&patient, &String::from_str(&env, "Amoxicillin"));
+        client.check_drug_allergy_interaction(&patient, &patient, &String::from_str(&env, "Amoxicillin"));
 
     assert_eq!(warnings.len(), 1);
     assert_eq!(
@@ -288,7 +290,7 @@ fn test_check_drug_allergy_interaction_no_match() {
 
     // Check for interaction with a different drug
     let warnings =
-        client.check_drug_allergy_interaction(&patient, &String::from_str(&env, "Ibuprofen"));
+        client.check_drug_allergy_interaction(&patient, &patient, &String::from_str(&env, "Ibuprofen"));
 
     assert_eq!(warnings.len(), 0);
 }
@@ -297,6 +299,9 @@ fn test_check_drug_allergy_interaction_no_match() {
 fn test_cross_sensitivity_checking() {
     let (env, contract_id, patient, provider, admin) = create_test_env();
     let client = AllergyTrackingContractClient::new(&env, &contract_id);
+
+    // Initialize the contract admin (required by register_cross_sensitivity)
+    client.initialize(&admin);
 
     // Register cross-sensitivity between Penicillin and Amoxicillin
     client.register_cross_sensitivity(
@@ -322,7 +327,7 @@ fn test_cross_sensitivity_checking() {
 
     // Check for interaction with Amoxicillin (cross-sensitive)
     let warnings =
-        client.check_drug_allergy_interaction(&patient, &String::from_str(&env, "Amoxicillin"));
+        client.check_drug_allergy_interaction(&patient, &patient, &String::from_str(&env, "Amoxicillin"));
 
     assert_eq!(warnings.len(), 1);
     assert_eq!(
@@ -425,6 +430,7 @@ fn test_get_active_allergies_filters_resolved() {
     );
 
     // Should only return 2 active allergies
+    client.grant_access(&patient, &provider);
     let active = client.get_active_allergies(&patient, &provider);
     assert_eq!(active.len(), 2);
 }
@@ -474,16 +480,19 @@ fn test_invalid_allergen_type_symbol() {
 #[test]
 #[should_panic(expected = "Error(Contract, #1)")] // Error::AllergyNotFound = 1
 fn test_allergy_not_found() {
-    let (env, contract_id, _, _, _) = create_test_env();
+    let (env, contract_id, patient, _, _) = create_test_env();
     let client = AllergyTrackingContractClient::new(&env, &contract_id);
 
-    client.get_allergy(&999);
+    client.get_allergy(&999, &patient);
 }
 
 #[test]
 fn test_comprehensive_workflow() {
     let (env, contract_id, patient, provider, admin) = create_test_env();
     let client = AllergyTrackingContractClient::new(&env, &contract_id);
+
+    // Initialize the contract admin (required by register_cross_sensitivity)
+    client.initialize(&admin);
 
     // Setup cross-sensitivities
     client.register_cross_sensitivity(
@@ -518,14 +527,15 @@ fn test_comprehensive_workflow() {
 
     // Check for drug interactions
     let warnings1 =
-        client.check_drug_allergy_interaction(&patient, &String::from_str(&env, "Penicillin"));
+        client.check_drug_allergy_interaction(&patient, &patient, &String::from_str(&env, "Penicillin"));
     assert_eq!(warnings1.len(), 1);
 
     let warnings2 =
-        client.check_drug_allergy_interaction(&patient, &String::from_str(&env, "Ampicillin"));
+        client.check_drug_allergy_interaction(&patient, &patient, &String::from_str(&env, "Ampicillin"));
     assert_eq!(warnings2.len(), 1);
 
     // Verify active allergies
+    client.grant_access(&patient, &provider);
     let active = client.get_active_allergies(&patient, &provider);
     assert_eq!(active.len(), 1);
     assert_eq!(active.get(0).unwrap().severity, Severity::Severe);
@@ -732,7 +742,7 @@ fn test_valid_allergen_is_trimmed_before_storage() {
         &true,
     );
 
-    let allergy = client.get_allergy(&allergy_id);
+    let allergy = client.get_allergy(&allergy_id, &patient);
     assert_eq!(allergy.allergen, String::from_str(&env, "Penicillin"));
 }
 
@@ -757,7 +767,7 @@ fn test_delete_record_soft_deletes_and_blocks_get_record() {
 
     client.delete_record(&record_id, &provider);
 
-    let deleted = client.try_get_record(&record_id);
+    let deleted = client.try_get_record(&record_id, &patient);
     assert!(matches!(deleted, Err(Ok(Error::AllergyNotFound))));
 }
 
@@ -793,6 +803,7 @@ fn test_get_all_records_excludes_deleted_by_default() {
 
     client.delete_record(&1u64, &patient);
 
+    client.grant_access(&patient, &provider);
     let visible = client.get_all_records(&patient, &provider, &false);
     assert_eq!(visible.len(), 1);
     assert_eq!(visible.get(0).unwrap().allergy_id, id1);
@@ -895,17 +906,17 @@ fn test_batch_record_allergies_success() {
     assert_eq!(ids.get(2).unwrap(), 2);
 
     // Verify each record was stored correctly
-    let rec0 = client.get_allergy(&0);
+    let rec0 = client.get_allergy(&0, &patient);
     assert_eq!(rec0.allergen, String::from_str(&env, "Penicillin"));
     assert_eq!(rec0.severity, Severity::Moderate);
     assert_eq!(rec0.status, AllergyStatus::Active);
 
-    let rec1 = client.get_allergy(&1);
+    let rec1 = client.get_allergy(&1, &patient);
     assert_eq!(rec1.allergen, String::from_str(&env, "Peanuts"));
     assert_eq!(rec1.severity, Severity::LifeThreatening);
 
     // verified=false → Suspected
-    let rec2 = client.get_allergy(&2);
+    let rec2 = client.get_allergy(&2, &patient);
     assert_eq!(rec2.status, AllergyStatus::Suspected);
 }
 
@@ -1072,6 +1083,7 @@ fn test_batch_record_allergies_no_partial_writes_on_validation_failure() {
     assert!(result.is_err());
 
     // Nothing should have been written — Penicillin must not exist
+    client.grant_access(&patient, &provider);
     let active = client.get_active_allergies(&patient, &provider);
     assert_eq!(active.len(), 0);
 }
@@ -1089,6 +1101,7 @@ fn test_batch_record_allergies_get_active_allergies_includes_batch_records() {
 
     client.batch_record_allergies(&patient, &provider, &entries);
 
+    client.grant_access(&patient, &provider);
     let active = client.get_active_allergies(&patient, &provider);
     assert_eq!(active.len(), 2);
 }
@@ -1102,6 +1115,6 @@ fn test_batch_record_allergies_allergens_are_trimmed() {
     entries.push_back(make_entry(&env, "  Penicillin\t", "medication", &["rash"], "mild", None, true));
 
     let ids = client.batch_record_allergies(&patient, &provider, &entries);
-    let rec = client.get_allergy(&ids.get(0).unwrap());
+    let rec = client.get_allergy(&ids.get(0).unwrap(), &patient);
     assert_eq!(rec.allergen, String::from_str(&env, "Penicillin"));
 }

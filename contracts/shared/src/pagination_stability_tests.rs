@@ -34,7 +34,7 @@
 #[cfg(test)]
 mod pagination_stability_tests {
     use crate::pagination::{get_paged, push_paged, PageResult, MAX_PAGE_SIZE};
-    use soroban_sdk::{contracttype, Env, TryIntoVal};
+    use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, TryIntoVal};
 
     #[contracttype]
     #[derive(Clone)]
@@ -43,12 +43,24 @@ mod pagination_stability_tests {
         Head,
     }
 
-    fn push(env: &Env, id: u64) {
-        push_paged(env, |p| TestKey::Page(p), || TestKey::Head, id);
+    /// Minimal contract so tests can access storage through `as_contract`
+    /// (storage is not accessible outside of a contract context).
+    #[contract]
+    struct DummyContract;
+
+    #[contractimpl]
+    impl DummyContract {
+        pub fn noop() {}
     }
 
-    fn get(env: &Env, page: u32) -> PageResult {
-        get_paged(env, |p| TestKey::Page(p), || TestKey::Head, page)
+    fn push(env: &Env, contract: &Address, id: u64) {
+        env.as_contract(contract, || push_paged(env, |p| TestKey::Page(p), || TestKey::Head, id));
+    }
+
+    fn get(env: &Env, contract: &Address, page: u32) -> PageResult {
+        env.as_contract(contract, || {
+            get_paged(env, |p| TestKey::Page(p), || TestKey::Head, page)
+        })
     }
 
     // ── basic round-trip ─────────────────────────────────────────────────────
@@ -56,7 +68,8 @@ mod pagination_stability_tests {
     #[test]
     fn empty_list_returns_empty_first_page() {
         let env = Env::default();
-        let result = get(&env, 0);
+        let contract = env.register(DummyContract, ());
+        let result = get(&env, &contract, 0);
         assert_eq!(result.ids.len(), 0);
         assert_eq!(result.has_more, false);
     }
@@ -64,8 +77,9 @@ mod pagination_stability_tests {
     #[test]
     fn single_item_on_page_zero() {
         let env = Env::default();
-        push(&env, 42);
-        let result = get(&env, 0);
+        let contract = env.register(DummyContract, ());
+        push(&env, &contract, 42);
+        let result = get(&env, &contract, 0);
         assert_eq!(result.ids.len(), 1);
         let id: u64 = result.ids.get(0).unwrap().try_into_val(&env).unwrap();
         assert_eq!(id, 42);
@@ -77,24 +91,25 @@ mod pagination_stability_tests {
     #[test]
     fn items_inserted_after_full_page_do_not_affect_earlier_page() {
         let env = Env::default();
+        let contract = env.register(DummyContract, ());
 
         // Fill page 0 completely.
         for i in 0..MAX_PAGE_SIZE {
-            push(&env, i as u64);
+            push(&env, &contract, i as u64);
         }
 
         // Read page 0 — it is now full and immutable.
-        let page0_before = get(&env, 0);
+        let page0_before = get(&env, &contract, 0);
         assert_eq!(page0_before.ids.len() as u32, MAX_PAGE_SIZE);
         assert_eq!(page0_before.has_more, true);
 
         // Insert more items (they land on page 1).
         for i in MAX_PAGE_SIZE..MAX_PAGE_SIZE + 5 {
-            push(&env, i as u64);
+            push(&env, &contract, i as u64);
         }
 
         // Re-read page 0 — must be identical.
-        let page0_after = get(&env, 0);
+        let page0_after = get(&env, &contract, 0);
         assert_eq!(page0_before.ids, page0_after.ids,
             "page 0 must be immutable after it was filled");
     }
@@ -102,16 +117,17 @@ mod pagination_stability_tests {
     #[test]
     fn new_items_appear_on_subsequent_pages_not_earlier_ones() {
         let env = Env::default();
+        let contract = env.register(DummyContract, ());
 
         // Fill page 0.
         for i in 0..MAX_PAGE_SIZE {
-            push(&env, i as u64);
+            push(&env, &contract, i as u64);
         }
 
         // Add one item to page 1.
-        push(&env, 999);
+        push(&env, &contract, 999);
 
-        let page1 = get(&env, 1);
+        let page1 = get(&env, &contract, 1);
         assert_eq!(page1.ids.len(), 1);
         let id: u64 = page1.ids.get(0).unwrap().try_into_val(&env).unwrap();
         assert_eq!(id, 999);
@@ -123,25 +139,26 @@ mod pagination_stability_tests {
     #[test]
     fn full_scan_collects_all_items_despite_mid_scan_insertion() {
         let env = Env::default();
+        let contract = env.register(DummyContract, ());
 
         // Insert enough items to fill two pages.
         let initial_count = MAX_PAGE_SIZE * 2;
         for i in 0..initial_count {
-            push(&env, i as u64);
+            push(&env, &contract, i as u64);
         }
 
         // Simulate a mid-scan insertion: read page 0, then insert, then read page 1.
-        let page0 = get(&env, 0);
+        let page0 = get(&env, &contract, 0);
         assert_eq!(page0.ids.len() as u32, MAX_PAGE_SIZE);
 
         // Concurrent insertion lands on page 2 (pages 0 and 1 are full).
-        push(&env, 9999);
+        push(&env, &contract, 9999);
 
-        let page1 = get(&env, 1);
+        let page1 = get(&env, &contract, 1);
         assert_eq!(page1.ids.len() as u32, MAX_PAGE_SIZE);
 
         // The concurrent item is on page 2, not mixed into page 1.
-        let page2 = get(&env, 2);
+        let page2 = get(&env, &contract, 2);
         assert_eq!(page2.ids.len(), 1);
         let id: u64 = page2.ids.get(0).unwrap().try_into_val(&env).unwrap();
         assert_eq!(id, 9999);
@@ -176,18 +193,19 @@ mod pagination_stability_tests {
     #[test]
     fn partial_head_page_insertion_does_not_duplicate_items() {
         let env = Env::default();
+        let contract = env.register(DummyContract, ());
 
-        push(&env, 1);
-        push(&env, 2);
-        push(&env, 3);
+        push(&env, &contract, 1);
+        push(&env, &contract, 2);
+        push(&env, &contract, 3);
 
-        let first_read = get(&env, 0);
+        let first_read = get(&env, &contract, 0);
         assert_eq!(first_read.ids.len(), 3);
 
         // Concurrent insertion onto the same head page.
-        push(&env, 4);
+        push(&env, &contract, 4);
 
-        let second_read = get(&env, 0);
+        let second_read = get(&env, &contract, 0);
         assert_eq!(second_read.ids.len(), 4);
 
         // Check no duplicates.
@@ -205,18 +223,20 @@ mod pagination_stability_tests {
     #[test]
     fn last_page_returns_no_next_page_sentinel() {
         let env = Env::default();
-        push(&env, 1);
-        let result = get(&env, 0);
+        let contract = env.register(DummyContract, ());
+        push(&env, &contract, 1);
+        let result = get(&env, &contract, 0);
         assert_eq!(result.has_more, false);
     }
 
     #[test]
     fn full_page_returns_next_page_index() {
         let env = Env::default();
+        let contract = env.register(DummyContract, ());
         for i in 0..MAX_PAGE_SIZE {
-            push(&env, i as u64);
+            push(&env, &contract, i as u64);
         }
-        let result = get(&env, 0);
+        let result = get(&env, &contract, 0);
         assert_eq!(result.has_more, true);
     }
 }

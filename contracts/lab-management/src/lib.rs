@@ -34,10 +34,10 @@ use soroban_sdk::{
 pub enum Error {
     NotFound = 1,
     Unauthorized = 2,
-    QCFieldFailed = 4,
+    QCFieldFailed = 3,
     /// The lab order counter has reached u64::MAX and cannot be incremented.
-    OrderIdOverflow = 5,
-    ProviderNotRegistered = 6,
+    OrderIdOverflow = 4,
+    ProviderNotRegistered = 5,
 }
 
 #[contracttype]
