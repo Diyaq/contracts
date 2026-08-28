@@ -585,6 +585,16 @@ impl ClinicalTrialContract {
         }
         storage::save_trial(&env, &trial);
 
+        // Decrement site enrollment if this enrollment was site-scoped
+        if let Some(site_id) = enrollment.site_id {
+            let mut site = storage::get_site(&env, enrollment.trial_record_id, site_id)
+                .ok_or(Error::SiteNotFound)?;
+            if site.enrolled > 0 {
+                site.enrolled -= 1;
+            }
+            storage::save_site(&env, &site);
+        }
+
         // Emit withdrawal event
         ParticipantWithdrawn {
             enrollment_id,
@@ -1085,6 +1095,15 @@ impl ClinicalTrialContract {
             return Err(Error::DuplicateEnrollment);
         }
 
+        // Per-site cap check if re-enrolling at a site
+        if let Some(site_id) = prior.site_id {
+            let mut site = storage::get_site(&env, trial_record_id, site_id)
+                .ok_or(Error::SiteNotFound)?;
+            if site.enrolled >= site.max_enrollment {
+                return Err(Error::SiteEnrollmentFull);
+            }
+        }
+
         let enrollment_id = storage::get_next_enrollment_id(&env);
 
         let enrollment = ParticipantEnrollment {
@@ -1110,6 +1129,14 @@ impl ClinicalTrialContract {
 
         trial.current_enrollment += 1;
         storage::save_trial(&env, &trial);
+
+        // Increment site enrollment if re-enrolling at a site
+        if let Some(site_id) = prior.site_id {
+            let mut site = storage::get_site(&env, trial_record_id, site_id)
+                .ok_or(Error::SiteNotFound)?;
+            site.enrolled += 1;
+            storage::save_site(&env, &site);
+        }
 
         ParticipantReEnrolled {
             enrollment_id,

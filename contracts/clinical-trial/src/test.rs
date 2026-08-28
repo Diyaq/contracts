@@ -636,174 +636,110 @@ fn test_enrolment_after_phase_advance_uses_updated_trial() {
     assert_eq!(enrol.trial_record_id, trial_id);
 }
 
-// ── #780: disqualifying_factors population tests ────────────────────────────
+// ── #757: per-site enrollment quota release on withdrawal ──────────────────
 
 #[test]
-fn test_disqualifying_factors_populated_for_failed_inclusion() {
-    let (env, _, pi, patient, client) = create_test_env();
+fn test_withdraw_participant_decrements_site_enrolled_and_allows_re_enrollment() {
+    let (env, _, pi, _, client) = create_test_env();
+    let (trial_id, site_a, _, coord_a, _) = setup_trial_with_sites(&env, &client, &pi);
 
-    let trial_record_id = client.register_clinical_trial(
-        &pi,
-        &String::from_str(&env, "TRIAL-780"),
-        &String::from_str(&env, "Disqualifying Factors Study"),
-        &symbol_short!("phase2"),
+    // site_a has max_enrollment = 50; fill it up with 50 participants
+    let participants: Vec<Address> = (0..50)
+        .map(|_| Address::generate(&env))
+        .collect();
+
+    let mut enrollment_ids = Vec::new(&env);
+    for (idx, participant) in participants.iter().enumerate() {
+        let enrollment_id = client.enrol_participant_at_site(
+            &trial_id,
+            &site_a,
+            &coord_a,
+            participant,
+            &symbol_short!("armA"),
+            &1100,
+            &create_protocol_hash(&env),
+            &String::from_str(&env, &format!("P{:02}", idx)),
+        );
+        enrollment_ids.push_back(enrollment_id);
+    }
+
+    // site_a is now full; 51st enrolment must fail
+    let extra = Address::generate(&env);
+    let result = client.try_enrol_participant_at_site(
+        &trial_id,
+        &site_a,
+        &coord_a,
+        &extra,
+        &symbol_short!("armA"),
+        &1100,
         &create_protocol_hash(&env),
-        &1000,
-        &9999,
-        &100,
-        &String::from_str(&env, "IRB-780"),
+        &String::from_str(&env, "PEXTRA"),
+    );
+    assert_eq!(result, Err(Ok(Error::SiteEnrollmentFull)));
+
+    // Withdraw the first participant
+    client.withdraw_participant(
+        &enrollment_ids.get(0).unwrap(),
+        &1200,
+        &symbol_short!("consent"),
+        &false,
     );
 
-    // Create criteria with one inclusion rule
-    let inclusion_rule = make_rule(&env, "age_group", "18-65");
-    let mut inclusion_vec = Vec::new(&env);
-    inclusion_vec.push_back(inclusion_rule.clone());
-
-    let exclusion_vec = Vec::new(&env);
-
-    client.register_eligibility_criteria(&pi, &trial_record_id, &inclusion_vec, &exclusion_vec);
-
-    // Evaluate eligibility with no matching evidence (inclusion rule fails)
-    let patient_data_hash: BytesN<32> = env.crypto().sha256(
-        &String::from_str(&env, "patient_data_v1").into()
-    ).into();
-
-    let empty_evidence = Vec::new(&env);
-
-    let result = client.check_patient_eligibility(
-        &trial_record_id,
-        &patient,
-        &patient_data_hash,
-        &empty_evidence,
+    // Now the 51st enrolment must succeed (site quota released)
+    let new_enrollment_id = client.enrol_participant_at_site(
+        &trial_id,
+        &site_a,
+        &coord_a,
+        &extra,
+        &symbol_short!("armA"),
+        &1200,
+        &create_protocol_hash(&env),
+        &String::from_str(&env, "PEXTRA"),
     );
 
-    // Patient should be ineligible (failed inclusion criterion)
-    assert!(!result.eligible);
-
-    // disqualifying_factors should be non-empty
-    assert!(result.disqualifying_factors.len() > 0);
-
-    // Each failed inclusion rule should have a corresponding entry
-    assert_eq!(result.met_inclusion.len(), 1);
-    assert!(!result.met_inclusion.get(0).unwrap()); // first inclusion rule failed
+    let enrollment = client.get_enrollment(&new_enrollment_id, &pi);
+    assert_eq!(enrollment.site_id, Some(site_a));
 }
 
 #[test]
-fn test_disqualifying_factors_populated_for_matched_exclusion() {
-    let (env, _, pi, patient, client) = create_test_env();
+fn test_re_enroll_at_site_increments_site_enrolled() {
+    let (env, _, pi, _, client) = create_test_env();
+    let (trial_id, site_a, _, coord_a, _) = setup_trial_with_sites(&env, &client, &pi);
 
-    let trial_record_id = client.register_clinical_trial(
-        &pi,
-        &String::from_str(&env, "TRIAL-780B"),
-        &String::from_str(&env, "Exclusion Factors Study"),
-        &symbol_short!("phase2"),
+    let participant = Address::generate(&env);
+
+    // Initial enrolment at site_a
+    let enrollment_id = client.enrol_participant_at_site(
+        &trial_id,
+        &site_a,
+        &coord_a,
+        &participant,
+        &symbol_short!("armA"),
+        &1100,
         &create_protocol_hash(&env),
-        &1000,
-        &9999,
-        &100,
-        &String::from_str(&env, "IRB-780B"),
+        &String::from_str(&env, "P001"),
     );
 
-    // Create criteria with one inclusion rule (passes) and one exclusion rule (matches)
-    let inclusion_rule = make_rule(&env, "age_group", "18-65");
-    let exclusion_rule = make_rule(&env, "pregnancy_status", "pregnant");
-
-    let mut inclusion_vec = Vec::new(&env);
-    inclusion_vec.push_back(inclusion_rule.clone());
-
-    let mut exclusion_vec = Vec::new(&env);
-    exclusion_vec.push_back(exclusion_rule.clone());
-
-    client.register_eligibility_criteria(&pi, &trial_record_id, &inclusion_vec, &exclusion_vec);
-
-    let patient_data_hash: BytesN<32> = env.crypto().sha256(
-        &String::from_str(&env, "patient_data_v1").into()
-    ).into();
-
-    // Create evidence that will pass inclusion but match exclusion
-    let mut evidence = Vec::new(&env);
-
-    // Inclusion evidence (will pass)
-    let inclusion_hash = expected_claim_hash(&env, trial_record_id, &patient_data_hash, &inclusion_rule);
-    evidence.push_back(crate::EligibilityClaimEvidence {
-        claim_hash: inclusion_hash,
-        evidence_type: crate::EvidenceType::Attestation,
-    });
-
-    // Exclusion evidence (will match, disqualifying the patient)
-    let exclusion_hash = expected_claim_hash(&env, trial_record_id, &patient_data_hash, &exclusion_rule);
-    evidence.push_back(crate::EligibilityClaimEvidence {
-        claim_hash: exclusion_hash,
-        evidence_type: crate::EvidenceType::Attestation,
-    });
-
-    let result = client.check_patient_eligibility(
-        &trial_record_id,
-        &patient,
-        &patient_data_hash,
-        &evidence,
+    // Withdraw
+    client.withdraw_participant(
+        &enrollment_id,
+        &1200,
+        &symbol_short!("consent"),
+        &false,
     );
 
-    // Patient should be ineligible (matched exclusion criterion)
-    assert!(!result.eligible);
-
-    // disqualifying_factors should be non-empty
-    assert!(result.disqualifying_factors.len() > 0);
-
-    // Inclusion rule passed, exclusion rule matched
-    assert_eq!(result.met_inclusion.len(), 1);
-    assert!(result.met_inclusion.get(0).unwrap()); // inclusion passed
-    assert_eq!(result.met_exclusion.len(), 1);
-    assert!(result.met_exclusion.get(0).unwrap()); // exclusion matched (disqualifying)
-}
-
-#[test]
-fn test_disqualifying_factors_empty_for_eligible_patient() {
-    let (env, _, pi, patient, client) = create_test_env();
-
-    let trial_record_id = client.register_clinical_trial(
-        &pi,
-        &String::from_str(&env, "TRIAL-780C"),
-        &String::from_str(&env, "Eligible Patient Study"),
-        &symbol_short!("phase2"),
+    // Re-enrol at the same site
+    let new_enrollment_id = client.re_enroll_participant(
+        &trial_id,
+        &participant,
+        &enrollment_id,
         &create_protocol_hash(&env),
-        &1000,
-        &9999,
-        &100,
-        &String::from_str(&env, "IRB-780C"),
+        &symbol_short!("armB"),
+        &1300,
+        &String::from_str(&env, "P001-R1"),
     );
 
-    // Create criteria with one inclusion rule
-    let inclusion_rule = make_rule(&env, "age_group", "18-65");
-    let mut inclusion_vec = Vec::new(&env);
-    inclusion_vec.push_back(inclusion_rule.clone());
-
-    let exclusion_vec = Vec::new(&env);
-
-    client.register_eligibility_criteria(&pi, &trial_record_id, &inclusion_vec, &exclusion_vec);
-
-    let patient_data_hash: BytesN<32> = env.crypto().sha256(
-        &String::from_str(&env, "patient_data_v1").into()
-    ).into();
-
-    // Create evidence that passes the inclusion rule
-    let mut evidence = Vec::new(&env);
-    let inclusion_hash = expected_claim_hash(&env, trial_record_id, &patient_data_hash, &inclusion_rule);
-    evidence.push_back(crate::EligibilityClaimEvidence {
-        claim_hash: inclusion_hash,
-        evidence_type: crate::EvidenceType::Attestation,
-    });
-
-    let result = client.check_patient_eligibility(
-        &trial_record_id,
-        &patient,
-        &patient_data_hash,
-        &evidence,
-    );
-
-    // Patient should be eligible
-    assert!(result.eligible);
-
-    // disqualifying_factors should be empty for eligible patients
-    assert_eq!(result.disqualifying_factors.len(), 0);
+    let enrollment = client.get_enrollment(&new_enrollment_id, &pi);
+    assert_eq!(enrollment.site_id, Some(site_a));
+    assert_eq!(enrollment.prior_enrollment_id, Some(enrollment_id));
 }

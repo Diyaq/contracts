@@ -9,8 +9,8 @@
 //! ## HIPAA Compliance
 //!
 //! **Access Control Safeguards:** Radiologist authentication for result documentation. Ordering
-//! provider validation via registry. Patient consent required for imaging studies. Result access
-//! restricted to ordering provider and patient. PACS system integration validation.
+//! provider validation via registry. Patient consent enforced via access-control contract for imaging
+//! study orders. Result access restricted to ordering provider and patient. PACS system integration validation.
 //!
 //! **Audit Controls:** Imaging order events logged with modality, study date, and ordering provider.
 //! Result documentation events tracked with radiologist identity. Report completion events emitted.
@@ -170,8 +170,8 @@ pub enum Error {
     CounterUnavailable = 11,
     /// An addendum was submitted for an order with no final report yet.
     FinalReportNotFound = 12,
-    /// Radiologist cannot request peer review from themselves
-    SelfReviewNotAllowed = 13,
+    /// Patient consent not found or invalid for imaging order
+    ConsentRequired = 13,
 }
 
 /// --------------------
@@ -230,9 +230,14 @@ pub struct ImagingRadiology;
 #[contractimpl]
 impl ImagingRadiology {
     /// Order a new imaging study
+    ///
+    /// Requires patient consent via the access-control contract before proceeding.
+    /// The consent check verifies that the patient has granted consent for "imaging" purposes
+    /// to the ordering provider.
     #[allow(clippy::too_many_arguments)]
     pub fn order_imaging_study(
         env: Env,
+        access_control: Address,
         provider_id: Address,
         patient_id: Address,
         study_type: Symbol,
@@ -242,6 +247,24 @@ impl ImagingRadiology {
         priority: Symbol,
     ) -> Result<u64, Error> {
         provider_id.require_auth();
+
+        // Verify patient consent via access-control contract
+        let args = soroban_sdk::vec![
+            &env,
+            patient_id.clone().into_val(&env),
+            provider_id.clone().into_val(&env),
+            String::from_str(&env, "imaging").into_val(&env),
+            0u32.into_val(&env),
+        ];
+        let consent_check: Result<(), soroban_sdk::Error> = env.invoke_contract(
+            &access_control,
+            &Symbol::new(&env, "check_consent"),
+            args,
+        );
+
+        if consent_check.is_err() {
+            return Err(Error::ConsentRequired);
+        }
 
         let counter_key = DataKey::OrderCounter;
         let order_id: u64 = shared_contracts::safe_increment_persistent(&env, &counter_key);

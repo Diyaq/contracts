@@ -24,6 +24,7 @@
 
 use soroban_sdk::{
     Address, BytesN, Env, String, Symbol, Vec, contract, contracterror, contractimpl, contracttype,
+    symbol_short,
 };
 
 // --- Custom Error Types ---
@@ -160,13 +161,19 @@ impl ClinicalGuidelineContract {
         }
 
         let metadata = GuidelineMetadata {
-            condition,
+            condition: condition.clone(),
             criteria_hash,
             recommendation_hash,
             evidence_level,
         };
 
         env.storage().persistent().set(&key, &metadata);
+
+        env.events().publish(
+            (symbol_short!("reg_guide"), guideline_id),
+            (condition, admin),
+        );
+
         Ok(())
     }
 
@@ -196,13 +203,19 @@ impl ClinicalGuidelineContract {
         }
 
         let metadata = GuidelineMetadata {
-            condition,
+            condition: condition.clone(),
             criteria_hash,
             recommendation_hash,
             evidence_level,
         };
 
         env.storage().persistent().set(&key, &metadata);
+
+        env.events().publish(
+            (symbol_short!("upd_guide"), guideline_id),
+            (condition, admin),
+        );
+
         Ok(())
     }
 
@@ -362,6 +375,11 @@ impl ClinicalGuidelineContract {
         env.storage()
             .persistent()
             .set(&counter_key, &(reminder_id + 1));
+
+        env.events().publish(
+            (symbol_short!("create_rem"), reminder_id),
+            (patient_id, provider_id),
+        );
 
         Ok(reminder_id)
     }

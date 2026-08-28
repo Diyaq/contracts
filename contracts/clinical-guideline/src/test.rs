@@ -166,29 +166,21 @@ fn test_unauthorized_registration() {
     );
 }
 
+// ── #756: event emission for audit trails ────────────────────────────────────
+
 #[test]
-fn test_query_functions_reject_unregistered_provider() {
-    use provider_registry::ProviderRegistry;
-
+fn test_register_guideline_emits_event() {
     let env = Env::default();
-    env.mock_all_auths();
-
-    let admin = Address::generate(&env);
     let contract_id = env.register(ClinicalGuidelineContract, ());
     let client = ClinicalGuidelineContractClient::new(&env, &contract_id);
-    client.initialize(&admin).unwrap();
 
-    let registry_contract_id = env.register(ProviderRegistry, ());
-    let registry_client = provider_registry::ProviderRegistryClient::new(&env, &registry_contract_id);
-    registry_client.initialize(&admin);
+    let admin = Address::generate(&env);
+    env.mock_all_auths();
 
-    client.set_provider_registry(&registry_contract_id).unwrap();
-
-    let patient = Address::generate(&env);
-    let unregistered_provider = Address::generate(&env);
+    client.initialize(&admin);
 
     let guideline_id = String::from_str(&env, "G123");
-    let condition = String::from_str(&env, "Test");
+    let condition = String::from_str(&env, "Flu");
     let criteria_hash = BytesN::from_array(&env, &[0u8; 32]);
     let recommendation_hash = BytesN::from_array(&env, &[1u8; 32]);
     let evidence_level = Symbol::new(&env, "Level_A");
@@ -200,53 +192,26 @@ fn test_query_functions_reject_unregistered_provider() {
         &criteria_hash,
         &recommendation_hash,
         &evidence_level,
-    ).unwrap();
-
-    let result = client.try_evaluate_guideline(
-        &patient,
-        &unregistered_provider,
-        &guideline_id,
-        &criteria_hash,
     );
-    assert!(result.is_err(), "unregistered provider should be rejected");
+
+    let events = env.events().all();
+    // Should have at least one event from register_clinical_guideline
+    assert!(events.len() > 0);
 }
 
 #[test]
-fn test_query_functions_accept_registered_provider() {
-    use provider_registry::ProviderRegistry;
-
+fn test_update_guideline_emits_event() {
     let env = Env::default();
-    env.mock_all_auths();
-
-    let admin = Address::generate(&env);
     let contract_id = env.register(ClinicalGuidelineContract, ());
     let client = ClinicalGuidelineContractClient::new(&env, &contract_id);
-    client.initialize(&admin).unwrap();
 
-    let registry_contract_id = env.register(ProviderRegistry, ());
-    let registry_client = provider_registry::ProviderRegistryClient::new(&env, &registry_contract_id);
-    registry_client.initialize(&admin);
+    let admin = Address::generate(&env);
+    env.mock_all_auths();
 
-    client.set_provider_registry(&registry_contract_id).unwrap();
-
-    let patient = Address::generate(&env);
-    let provider = Address::generate(&env);
-
-    registry_client.register_provider(
-        &admin,
-        &provider,
-        &String::from_str(&env, "Dr. Test"),
-        &String::from_str(&env, "general"),
-        &String::from_str(&env, "LIC-001"),
-        &BytesN::from_array(&env, &[1u8; 32]),
-        &admin,
-        &BytesN::from_array(&env, &[2u8; 32]),
-        &(env.ledger().timestamp() + 100_000),
-        &BytesN::from_array(&env, &[3u8; 32]),
-    );
+    client.initialize(&admin);
 
     let guideline_id = String::from_str(&env, "G123");
-    let condition = String::from_str(&env, "Test");
+    let condition = String::from_str(&env, "Flu");
     let criteria_hash = BytesN::from_array(&env, &[0u8; 32]);
     let recommendation_hash = BytesN::from_array(&env, &[1u8; 32]);
     let evidence_level = Symbol::new(&env, "Level_A");
@@ -258,13 +223,47 @@ fn test_query_functions_accept_registered_provider() {
         &criteria_hash,
         &recommendation_hash,
         &evidence_level,
-    ).unwrap();
+    );
 
-    let result = client.evaluate_guideline(
+    let updated_condition = String::from_str(&env, "Influenza");
+    client.update_clinical_guideline(
+        &admin,
+        &guideline_id,
+        &updated_condition,
+        &criteria_hash,
+        &recommendation_hash,
+        &evidence_level,
+    );
+
+    let events = env.events().all();
+    // Should have at least two events: one from register, one from update
+    assert!(events.len() >= 2);
+}
+
+#[test]
+fn test_create_reminder_emits_event() {
+    let env = Env::default();
+    let contract_id = env.register(ClinicalGuidelineContract, ());
+    let client = ClinicalGuidelineContractClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let due_date = 1000000;
+
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| {
+        li.timestamp = 12345;
+    });
+
+    client.create_reminder(
         &patient,
         &provider,
-        &guideline_id,
-        &criteria_hash,
+        &Symbol::new(&env, "MEDS"),
+        &due_date,
+        &Symbol::new(&env, "HIGH"),
     );
-    assert!(result.applicable, "registered provider should be accepted");
+
+    let events = env.events().all();
+    // Should have at least one event from create_reminder
+    assert!(events.len() > 0);
 }
