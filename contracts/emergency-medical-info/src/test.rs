@@ -182,11 +182,15 @@ fn test_add_critical_alert() {
 
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
+    let admin = Address::generate(&env);
     env.mock_all_auths();
 
     let alert_type = Symbol::new(&env, "ALLERGY");
     let alert_text = hash(&env, 61);
     let severity = Symbol::new(&env, "CRITICAL");
+
+    client.initialize(&admin);
+    client.register_responder(&admin, &provider);
 
     client.add_critical_alert(&patient, &provider, &alert_type, &alert_text, &severity);
 
@@ -197,6 +201,34 @@ fn test_add_critical_alert() {
 }
 
 #[test]
+fn test_add_critical_alert_rejects_unregistered_responder() {
+    let env = Env::default();
+    let contract_id = env.register(EmergencyMedicalInfo, ());
+    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let unregistered_caller = Address::generate(&env);
+    let admin = Address::generate(&env);
+    env.mock_all_auths();
+
+    client.initialize(&admin);
+
+    // An address that merely signs the call but was never registered as an
+    // emergency responder must not be able to fabricate a critical alert.
+    let result = client.try_add_critical_alert(
+        &patient,
+        &unregistered_caller,
+        &Symbol::new(&env, "ALLERGY"),
+        &hash(&env, 61),
+        &Symbol::new(&env, "CRITICAL"),
+    );
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
+
+    let alerts = client.get_critical_alerts(&patient, &patient);
+    assert_eq!(alerts.len(), 0);
+}
+
+#[test]
 fn test_multiple_critical_alerts() {
     let env = Env::default();
     let contract_id = env.register(EmergencyMedicalInfo, ());
@@ -204,7 +236,11 @@ fn test_multiple_critical_alerts() {
 
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
+    let admin = Address::generate(&env);
     env.mock_all_auths();
+
+    client.initialize(&admin);
+    client.register_responder(&admin, &provider);
 
     // Add multiple alerts
     client.add_critical_alert(
@@ -387,7 +423,11 @@ fn test_recovery_migrates_dnr_order_and_critical_alerts() {
     let guardian_2 = Address::generate(&env);
     let new_owner = Address::generate(&env);
     let provider = Address::generate(&env);
+    let admin = Address::generate(&env);
     env.mock_all_auths();
+
+    client.initialize(&admin);
+    client.register_responder(&admin, &provider);
 
     client.set_emergency_profile(
         &patient,

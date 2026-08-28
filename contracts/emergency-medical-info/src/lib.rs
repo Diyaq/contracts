@@ -238,8 +238,15 @@ impl EmergencyMedicalInfo {
         alert_type: Symbol,
         alert_text_hash: BytesN<32>,
         severity: Symbol,
-    ) {
+    ) -> Result<(), Error> {
         provider_id.require_auth();
+
+        // Proving control of an address is not proof of role -- only
+        // registered emergency responders (or trusted callers acting through
+        // one) may append critical alerts to a patient's record.
+        if !Self::is_registered_responder(env.clone(), provider_id.clone()) {
+            return Err(Error::NotAuthorized);
+        }
 
         let alert = CriticalAlert {
             provider_id,
@@ -258,6 +265,8 @@ impl EmergencyMedicalInfo {
 
         alerts.push_back(alert);
         env.storage().persistent().set(&key, &alerts);
+
+        Ok(())
     }
 
     /// Emergency access with break-glass protocol

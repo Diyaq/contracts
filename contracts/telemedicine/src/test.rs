@@ -105,7 +105,13 @@ fn test_telemedicine_lifecycle() {
         is_controlled_substance: false,
     };
     let rx_id = client.prescribe_during_visit(&visit_id, &provider_id, &patient_id, &rx_request);
-    assert_eq!(rx_id, 0);
+    assert_eq!(rx_id, 1);
+
+    // Verify prescription was persisted
+    let stored_rx = client.get_prescription(&rx_id);
+    assert_eq!(stored_rx.medication_name, rx_request.medication_name);
+    assert_eq!(stored_rx.dosage, rx_request.dosage);
+    assert_eq!(stored_rx.is_controlled_substance, rx_request.is_controlled_substance);
 
     // 6. Record documentation
     let note_hash = BytesN::from_array(&env, &[1; 32]);

@@ -617,7 +617,19 @@ impl TelemedicineContract {
             }
         }
 
-        let rx_id = env.ledger().timestamp() % 100000;
+        let rx_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PrescriptionCount)
+            .unwrap_or(0)
+            + 1;
+        env.storage()
+            .persistent()
+            .set(&DataKey::PrescriptionCount, &rx_id);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Prescription(rx_id), &prescription_details);
 
         env.events().publish(
             (Symbol::new(&env, "prescription_issued"), visit_id),
@@ -650,6 +662,17 @@ impl TelemedicineContract {
             .persistent()
             .set(&DataKey::ControlledSubstancePolicy(jurisdiction), &requires_inperson);
         Ok(())
+    }
+
+    /// Retrieve a prescription by its rx_id.
+    pub fn get_prescription(
+        env: Env,
+        rx_id: u64,
+    ) -> Result<PrescriptionRequest, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Prescription(rx_id))
+            .ok_or(Error::VisitNotFound)
     }
 }
 

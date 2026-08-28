@@ -342,7 +342,7 @@ impl NutritionCareContract {
     /// One-time initialization of the contraindication admin.
     /// Fails if an admin has already been set; use `set_contraindication_admin`
     /// (called by the current admin) to rotate the admin afterwards.
-    pub fn initialize_contraindication_admin(env: Env, admin: Address) -> Result<(), Error> {
+    pub fn init_contraindication_admin(env: Env, admin: Address) -> Result<(), Error> {
         admin.require_auth();
         if env
             .storage()
@@ -649,6 +649,10 @@ impl NutritionCareContract {
         dietitian_id.require_auth();
 
         load_care_plan(&env, care_plan_id).ok_or(Error::CarePlanNotFound)?;
+
+        if !is_provider_authorized(&env, care_plan_id, &dietitian_id) {
+            return Err(Error::ProviderNotAuthorized);
+        }
 
         let rec = SupplementRecommendation {
             care_plan_id,

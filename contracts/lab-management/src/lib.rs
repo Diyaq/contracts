@@ -236,10 +236,24 @@ impl LabManagementContract {
         lab_id: Address,
         test_code: String,
         val: String,
-    ) {
+    ) -> Result<(), Error> {
         lab_id.require_auth();
+
+        // 1. Verify order exists.
+        let order: LabOrder = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LabOrder(order_id))
+            .ok_or(Error::NotFound)?;
+
+        // 2. Verify the caller is the assigned lab.
+        if order.lab_id != Some(lab_id.clone()) {
+            return Err(Error::Unauthorized);
+        }
+
         env.events()
             .publish((Symbol::new(&env, "CRITICAL"), order_id), (test_code, val));
+        Ok(())
     }
 }
 mod test;

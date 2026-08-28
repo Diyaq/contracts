@@ -671,6 +671,9 @@ impl HealthcareCredentialingSystem {
         initiated_by: Address,
     ) -> Result<u64, Error> {
         initiated_by.require_auth();
+        if !is_committee_member(&env, &initiated_by) {
+            return Err(Error::NotAuthorized);
+        }
         let current: u64 = env
             .storage()
             .instance()
@@ -752,6 +755,9 @@ impl HealthcareCredentialingSystem {
         peer_review_required: bool,
     ) -> Result<(), Error> {
         suspension_authority.require_auth();
+        if !is_committee_member(&env, &suspension_authority) {
+            return Err(Error::NotAuthorized);
+        }
         let mut privileges: Vec<Privilege> = env
             .storage()
             .persistent()
@@ -819,6 +825,9 @@ impl HealthcareCredentialingSystem {
         monitoring_requirements: Vec<String>,
     ) -> Result<(), Error> {
         reinstatement_authority.require_auth();
+        if !is_committee_member(&env, &reinstatement_authority) {
+            return Err(Error::NotAuthorized);
+        }
         let mut privileges: Vec<Privilege> = env
             .storage()
             .persistent()
@@ -1007,6 +1016,9 @@ impl HealthcareCredentialingSystem {
         current_time: u64,
     ) -> Result<(), Error> {
         enforcement_authority.require_auth();
+        if !is_committee_member(&env, &enforcement_authority) {
+            return Err(Error::NotAuthorized);
+        }
 
         // Get the active recredentialing case
         let active_case_id = env
@@ -1255,6 +1267,13 @@ mod test {
     use super::*;
     use soroban_sdk::{testutils::Address as _, Address};
 
+    /// Initialize the contract with a freshly generated admin and return that admin address.
+    fn setup_admin(env: &Env, client: &HealthcareCredentialingSystemClient) -> Address {
+        let admin = Address::generate(env);
+        client.initialize(&admin);
+        admin
+    }
+
     fn create_case(
         env: &Env,
         client: &HealthcareCredentialingSystemClient,
@@ -1266,13 +1285,19 @@ mod test {
         client.initiate_credentialing(provider, facility, &1_700_000_000, &requested)
     }
 
-    fn submit_required_docs(env: &Env, client: &HealthcareCredentialingSystemClient, case_id: u64) {
+    fn submit_required_docs(
+        env: &Env,
+        client: &HealthcareCredentialingSystemClient,
+        case_id: u64,
+        provider: &Address,
+    ) {
         let types = ["medical_license", "dea", "board_cert", "cv", "references"];
 
         let mut idx: usize = 0;
         while idx < types.len() {
             client.submit_credential_document(
                 &case_id,
+                provider,
                 &Symbol::new(env, types[idx]),
                 &BytesN::from_array(env, &[idx as u8; 32]),
                 &String::from_str(env, "Issuer"),
@@ -1291,6 +1316,8 @@ mod test {
         let contract_id = env.register(HealthcareCredentialingSystem, ());
         let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
 
+        let admin = setup_admin(&env, &client);
+
         let provider = Address::generate(&env);
         let facility = Address::generate(&env);
         let verifier = Address::generate(&env);
@@ -1298,8 +1325,13 @@ mod test {
         let ref_provider = Address::generate(&env);
         let committee = Address::generate(&env);
 
+        client.add_authorized_verifier(&admin, &verifier);
+        client.add_authorized_verifier(&admin, &checker);
+        client.add_authorized_verifier(&admin, &ref_provider);
+        client.add_committee_member(&admin, &committee);
+
         let case_id = create_case(&env, &client, &provider, &facility);
-        submit_required_docs(&env, &client, case_id);
+        submit_required_docs(&env, &client, case_id, &provider);
 
         let verify_types = ["medical_license", "dea", "board_cert", "cv", "references"];
         let mut idx: usize = 0;
@@ -1366,9 +1398,11 @@ mod test {
         let contract_id = env.register(HealthcareCredentialingSystem, ());
         let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
 
+        let admin = setup_admin(&env, &client);
         let provider = Address::generate(&env);
         let facility = Address::generate(&env);
         let verifier = Address::generate(&env);
+        client.add_authorized_verifier(&admin, &verifier);
         let case_id = create_case(&env, &client, &provider, &facility);
 
         let res = client.try_verify_credential(
@@ -1391,9 +1425,11 @@ mod test {
         let contract_id = env.register(HealthcareCredentialingSystem, ());
         let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
 
+        let admin = setup_admin(&env, &client);
         let provider = Address::generate(&env);
         let facility = Address::generate(&env);
         let ref_provider = Address::generate(&env);
+        client.add_authorized_verifier(&admin, &ref_provider);
         let case_id = create_case(&env, &client, &provider, &facility);
 
         let mut ratings = Vec::new(&env);
@@ -1420,9 +1456,11 @@ mod test {
         let contract_id = env.register(HealthcareCredentialingSystem, ());
         let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
 
+        let admin = setup_admin(&env, &client);
         let provider = Address::generate(&env);
         let facility = Address::generate(&env);
         let checker = Address::generate(&env);
+        client.add_authorized_verifier(&admin, &checker);
         let case_id = create_case(&env, &client, &provider, &facility);
 
         let mut dbs = Vec::new(&env);
@@ -1441,10 +1479,12 @@ mod test {
         let contract_id = env.register(HealthcareCredentialingSystem, ());
         let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
 
+        let admin = setup_admin(&env, &client);
         let provider = Address::generate(&env);
         let facility = Address::generate(&env);
         let supervisor = Address::generate(&env);
         let reviewer = Address::generate(&env);
+        client.add_committee_member(&admin, &reviewer);
 
         let req_id = client.request_provisional_privileges(
             &provider,
@@ -1489,6 +1529,7 @@ mod test {
         let contract_id = env.register(HealthcareCredentialingSystem, ());
         let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
 
+        let admin = setup_admin(&env, &client);
         let provider = Address::generate(&env);
         let facility = Address::generate(&env);
         let verifier = Address::generate(&env);
@@ -1497,8 +1538,14 @@ mod test {
         let committee = Address::generate(&env);
         let authority = Address::generate(&env);
 
+        client.add_authorized_verifier(&admin, &verifier);
+        client.add_authorized_verifier(&admin, &checker);
+        client.add_authorized_verifier(&admin, &ref_provider);
+        client.add_committee_member(&admin, &committee);
+        client.add_committee_member(&admin, &authority);
+
         let case_id = create_case(&env, &client, &provider, &facility);
-        submit_required_docs(&env, &client, case_id);
+        submit_required_docs(&env, &client, case_id, &provider);
 
         let verify_types = ["medical_license", "dea", "board_cert", "cv", "references"];
         let mut idx: usize = 0;
@@ -1571,5 +1618,134 @@ mod test {
             &after_reinstate.get(0).unwrap().restrictions,
             &String::from_str(&env, "SUSPENDED")
         ));
+    }
+
+    // -- Issue #729: non-committee callers must be rejected -------------------------------
+
+    #[test]
+    fn suspend_privileges_rejects_non_committee_caller() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(HealthcareCredentialingSystem, ());
+        let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
+
+        let provider = Address::generate(&env);
+        let facility = Address::generate(&env);
+        // `outsider` has never been registered as a committee member.
+        let outsider = Address::generate(&env);
+
+        let res = client.try_suspend_privileges(
+            &provider,
+            &facility,
+            &outsider,
+            &String::from_str(&env, "Quality concern"),
+            &1_700_040_000,
+            &true,
+            &true,
+        );
+        assert_eq!(res, Err(Ok(Error::NotAuthorized)));
+    }
+
+    #[test]
+    fn reinstate_privileges_rejects_non_committee_caller() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(HealthcareCredentialingSystem, ());
+        let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
+
+        let provider = Address::generate(&env);
+        let facility = Address::generate(&env);
+        let outsider = Address::generate(&env);
+
+        let actions = Vec::new(&env);
+        let monitoring = Vec::new(&env);
+        let res = client.try_reinstate_privileges(
+            &provider,
+            &facility,
+            &outsider,
+            &actions,
+            &monitoring,
+        );
+        assert_eq!(res, Err(Ok(Error::NotAuthorized)));
+    }
+
+    #[test]
+    fn trigger_focused_review_rejects_non_committee_caller() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(HealthcareCredentialingSystem, ());
+        let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
+
+        let provider = Address::generate(&env);
+        let facility = Address::generate(&env);
+        let outsider = Address::generate(&env);
+
+        let res = client.try_trigger_focused_review(
+            &provider,
+            &facility,
+            &Symbol::new(&env, "complication_rate"),
+            &Symbol::new(&env, "fppe"),
+            &outsider,
+        );
+        assert_eq!(res, Err(Ok(Error::NotAuthorized)));
+    }
+
+    #[test]
+    fn enforce_recredentialing_deadline_rejects_non_committee_caller() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(HealthcareCredentialingSystem, ());
+        let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
+
+        let provider = Address::generate(&env);
+        let facility = Address::generate(&env);
+        let outsider = Address::generate(&env);
+
+        let res = client.try_enforce_recredentialing_deadline(
+            &provider,
+            &facility,
+            &outsider,
+            &1_800_000_000,
+        );
+        assert_eq!(res, Err(Ok(Error::NotAuthorized)));
+    }
+
+    #[test]
+    fn enforce_recredentialing_deadline_allows_committee_caller_past_auth_check() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(HealthcareCredentialingSystem, ());
+        let client = HealthcareCredentialingSystemClient::new(&env, &contract_id);
+
+        let admin = setup_admin(&env, &client);
+        let provider = Address::generate(&env);
+        let facility = Address::generate(&env);
+        let committee = Address::generate(&env);
+        client.add_committee_member(&admin, &committee);
+
+        client.initiate_recredentialing_case(
+            &provider,
+            &facility,
+            &committee,
+            &1_700_000_000,
+            &1_700_100_000,
+        );
+
+        // A committee member clears the new authorization check; the call still fails
+        // downstream because no privileges exist yet for this provider/facility, proving
+        // the rejection above is specifically about committee membership, not a blanket
+        // failure.
+        let res = client.try_enforce_recredentialing_deadline(
+            &provider,
+            &facility,
+            &committee,
+            &1_700_200_000,
+        );
+        assert_eq!(res, Err(Ok(Error::PrivilegeNotFound)));
     }
 }
