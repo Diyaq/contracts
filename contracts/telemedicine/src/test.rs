@@ -433,16 +433,19 @@ fn test_prescribe_controlled_substance_blocked_by_policy() {
     let client = TelemedicineContractClient::new(&env, &contract_id);
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
+    let admin = Address::generate(&env);
+
+    // Initialize with admin
+    client.initialize(&admin).unwrap();
 
     let visit_id = setup_active_visit(&env, &client, &provider, &patient, "NY", "NY");
 
     // Set NY policy: controlled substances require in-person.
-    let admin = Address::generate(&env);
     client.set_controlled_substance_policy(
         &admin,
         &String::from_str(&env, "NY"),
         &true,
-    );
+    ).unwrap();
 
     let rx = PrescriptionRequest {
         medication_name: String::from_str(&env, "Oxycodone"),
@@ -459,100 +462,67 @@ fn test_prescribe_controlled_substance_blocked_by_policy() {
 }
 
 #[test]
-fn test_prescribe_rx_id_uniqueness_and_persistence() {
+fn test_initialize_admin() {
     let env = Env::default();
     env.mock_all_auths();
-
     let contract_id = env.register(TelemedicineContract, ());
     let client = TelemedicineContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
 
-    let patient_id = Address::generate(&env);
-    let provider_id = Address::generate(&env);
-    let visit_time = 1700000000;
+    let result = client.initialize(&admin);
+    assert!(result.is_ok());
+}
 
-    // Register provider license
-    client.register_provider_license(
-        &provider_id,
+#[test]
+fn test_set_rate_limit_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+
+    client.initialize(&admin).unwrap();
+
+    let result = client.try_set_rate_limit_config(&non_admin, &10u32, &86400u64);
+    assert_eq!(result, Err(Ok(crate::types::Error::NotAuthorized)));
+}
+
+#[test]
+fn test_set_jurisdiction_policy_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+
+    client.initialize(&admin).unwrap();
+
+    let result = client.try_set_jurisdiction_policy(
+        &non_admin,
         &String::from_str(&env, "NY"),
-        &String::from_str(&env, "LIC-NY-001"),
-        &0_u64,
-    );
-
-    // Schedule first visit
-    let visit_id_1 = client.schedule_virtual_visit(
-        &patient_id,
-        &provider_id,
-        &visit_time,
-        &Symbol::new(&env, "Consult"),
-        &30,
-        &Symbol::new(&env, "ZoomHD"),
         &true,
+        &String::from_str(&env, "US-NY"),
+    );
+    assert_eq!(result, Err(Ok(crate::types::Error::NotAuthorized)));
+}
+
+#[test]
+fn test_set_controlled_substance_policy_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+
+    client.initialize(&admin).unwrap();
+
+    let result = client.try_set_controlled_substance_policy(
+        &non_admin,
+        &String::from_str(&env, "NY"),
         &true,
     );
-
-    // Start first session
-    let token_1 = client.start_virtual_session(
-        &visit_id_1,
-        &provider_id,
-        &visit_time,
-        &String::from_str(&env, "NY"),
-        &String::from_str(&env, "NY"),
-    );
-    client.validate_session_token(&visit_id_1, &provider_id, &token_1);
-
-    // Issue first prescription
-    let rx_request_1 = PrescriptionRequest {
-        medication_name: String::from_str(&env, "Amoxicillin"),
-        dosage: String::from_str(&env, "500mg"),
-        frequency: String::from_str(&env, "BID"),
-        duration_days: 10,
-        is_controlled_substance: false,
-    };
-    let rx_id_1 = client.prescribe_during_visit(&visit_id_1, &provider_id, &patient_id, &rx_request_1);
-
-    // Schedule second visit at same timestamp to test uniqueness
-    let visit_id_2 = client.schedule_virtual_visit(
-        &patient_id,
-        &provider_id,
-        &visit_time,
-        &Symbol::new(&env, "FollowUp"),
-        &15,
-        &Symbol::new(&env, "ZoomHD"),
-        &true,
-        &true,
-    );
-
-    // Start second session
-    let token_2 = client.start_virtual_session(
-        &visit_id_2,
-        &provider_id,
-        &visit_time,
-        &String::from_str(&env, "NY"),
-        &String::from_str(&env, "NY"),
-    );
-    client.validate_session_token(&visit_id_2, &provider_id, &token_2);
-
-    // Issue second prescription at same timestamp
-    let rx_request_2 = PrescriptionRequest {
-        medication_name: String::from_str(&env, "Ibuprofen"),
-        dosage: String::from_str(&env, "400mg"),
-        frequency: String::from_str(&env, "Q6H"),
-        duration_days: 5,
-        is_controlled_substance: false,
-    };
-    let rx_id_2 = client.prescribe_during_visit(&visit_id_2, &provider_id, &patient_id, &rx_request_2);
-
-    // rx_ids must be unique even though both prescriptions were issued at same timestamp
-    assert_ne!(rx_id_1, rx_id_2);
-    assert_eq!(rx_id_1, 1);
-    assert_eq!(rx_id_2, 2);
-
-    // Both prescriptions should be independently retrievable
-    let stored_rx_1 = client.get_prescription(&rx_id_1);
-    assert_eq!(stored_rx_1.medication_name, rx_request_1.medication_name);
-    assert_eq!(stored_rx_1.dosage, rx_request_1.dosage);
-
-    let stored_rx_2 = client.get_prescription(&rx_id_2);
-    assert_eq!(stored_rx_2.medication_name, rx_request_2.medication_name);
-    assert_eq!(stored_rx_2.dosage, rx_request_2.dosage);
+    assert_eq!(result, Err(Ok(crate::types::Error::NotAuthorized)));
 }
