@@ -34,7 +34,7 @@ fn test_conduct_pt_evaluation() {
 
     assert_eq!(eval_id, 1);
 
-    let evaluation = client.get_evaluation(&eval_id);
+    let evaluation = client.get_evaluation(&therapist, &eval_id);
     assert_eq!(evaluation.patient_id, patient);
     assert_eq!(evaluation.therapist_id, therapist);
 }
@@ -70,7 +70,7 @@ fn test_assess_range_of_motion() {
         &Some(String::from_str(&env, "Moderate")),
     );
 
-    let rom_assessments = client.get_rom_assessments(&eval_id);
+    let rom_assessments = client.get_rom_assessments(&therapist, &eval_id);
     assert_eq!(rom_assessments.len(), 1);
     assert_eq!(rom_assessments.get(0).unwrap().degrees, 120);
 }
@@ -104,7 +104,7 @@ fn test_assess_strength() {
         &Symbol::new(&env, "right"),
     );
 
-    let strength_assessments = client.get_strength_assessments(&eval_id);
+    let strength_assessments = client.get_strength_assessments(&therapist, &eval_id);
     assert_eq!(strength_assessments.len(), 1);
 }
 
@@ -137,7 +137,7 @@ fn test_assess_balance_mobility() {
         &Symbol::new(&env, "moderate"),
     );
 
-    let balance_assessments = client.get_balance_mobility_assessments(&eval_id);
+    let balance_assessments = client.get_balance_mobility_assessments(&therapist, &eval_id);
     assert_eq!(balance_assessments.len(), 1);
     assert_eq!(balance_assessments.get(0).unwrap().score, 45);
 }
@@ -204,7 +204,7 @@ fn test_create_rehab_treatment_plan() {
 
     assert_eq!(plan_id, 1);
 
-    let plan = client.get_treatment_plan(&plan_id);
+    let plan = client.get_treatment_plan(&therapist, &plan_id);
     assert_eq!(plan.evaluation_id, eval_id);
     assert_eq!(plan.duration_weeks, 8);
 }
@@ -269,7 +269,7 @@ fn test_document_therapy_session() {
         &Some(String::from_str(&env, "Home exercises")),
     );
 
-    let sessions = client.get_therapy_sessions(&plan_id);
+    let sessions = client.get_therapy_sessions(&therapist, &plan_id);
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions.get(0).unwrap().session_duration_minutes, 45);
 }
@@ -336,7 +336,7 @@ fn test_track_pain_level() {
         &quality,
     );
 
-    let pain_measurements = client.get_pain_measurements(&plan_id);
+    let pain_measurements = client.get_pain_measurements(&therapist, &plan_id);
     assert_eq!(pain_measurements.len(), 1);
     assert_eq!(pain_measurements.get(0).unwrap().pain_score, 6);
 }
@@ -400,7 +400,7 @@ fn test_measure_functional_outcome() {
         &true,
     );
 
-    let outcomes = client.get_functional_outcomes(&plan_id);
+    let outcomes = client.get_functional_outcomes(&therapist, &plan_id);
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes.get(0).unwrap().score, 25);
 }
@@ -526,7 +526,7 @@ fn test_document_progress_note() {
         &plan_mods,
     );
 
-    let notes = client.get_progress_notes(&plan_id);
+    let notes = client.get_progress_notes(&therapist, &plan_id);
     assert_eq!(notes.len(), 1);
 }
 
@@ -594,7 +594,7 @@ fn test_discharge_from_therapy() {
         &hep_hash,
     );
 
-    let discharge = client.get_discharge_record(&plan_id);
+    let discharge = client.get_discharge_record(&therapist, &plan_id);
     assert_eq!(discharge.discharge_date, 5000u64);
 }
 
@@ -700,19 +700,19 @@ fn test_complete_rehab_workflow() {
     );
 
     // Verify all data
-    let evaluation = client.get_evaluation(&eval_id);
+    let evaluation = client.get_evaluation(&therapist, &eval_id);
     assert_eq!(evaluation.patient_id, patient);
 
-    let rom_assessments = client.get_rom_assessments(&eval_id);
+    let rom_assessments = client.get_rom_assessments(&therapist, &eval_id);
     assert_eq!(rom_assessments.len(), 1);
 
-    let sessions = client.get_therapy_sessions(&plan_id);
+    let sessions = client.get_therapy_sessions(&therapist, &plan_id);
     assert_eq!(sessions.len(), 1);
 
-    let pain_measurements = client.get_pain_measurements(&plan_id);
+    let pain_measurements = client.get_pain_measurements(&therapist, &plan_id);
     assert_eq!(pain_measurements.len(), 1);
 
-    let outcomes = client.get_functional_outcomes(&plan_id);
+    let outcomes = client.get_functional_outcomes(&therapist, &plan_id);
     assert_eq!(outcomes.len(), 1);
 }
 
@@ -789,7 +789,7 @@ fn test_set_rehabilitation_goal_success() {
     );
 
     assert_eq!(goal_id, 1);
-    let goal = client.get_measurable_goal(&goal_id);
+    let goal = client.get_measurable_goal(&therapist, &goal_id);
     assert_eq!(goal.plan_id, plan_id);
     assert_eq!(goal.target_value, 120);
     assert!(!goal.achieved);
@@ -814,12 +814,12 @@ fn test_record_progress_below_target() {
 
     client.record_progress(&plan_id, &goal_id, &80u32, &1500u64);
 
-    let progress = client.get_goal_progress(&plan_id, &goal_id);
+    let progress = client.get_goal_progress(&therapist, &plan_id, &goal_id);
     assert_eq!(progress.len(), 1);
     assert_eq!(progress.get(0).unwrap().current_value, 80);
 
     // Not yet achieved
-    let goal = client.get_measurable_goal(&goal_id);
+    let goal = client.get_measurable_goal(&therapist, &goal_id);
     assert!(!goal.achieved);
 }
 
@@ -840,10 +840,10 @@ fn test_record_progress_achieves_goal() {
     client.record_progress(&plan_id, &goal_id, &5u32, &1400u64);
     client.record_progress(&plan_id, &goal_id, &3u32, &1500u64);
 
-    let goal = client.get_measurable_goal(&goal_id);
+    let goal = client.get_measurable_goal(&therapist, &goal_id);
     assert!(goal.achieved);
 
-    let progress = client.get_goal_progress(&plan_id, &goal_id);
+    let progress = client.get_goal_progress(&therapist, &plan_id, &goal_id);
     assert_eq!(progress.len(), 2);
 }
 
@@ -864,7 +864,7 @@ fn test_goal_progress_time_series_queryable() {
         client.record_progress(&plan_id, &goal_id, &(50 + i * 10), &(1000 + i as u64 * 100));
     }
 
-    let progress = client.get_goal_progress(&plan_id, &goal_id);
+    let progress = client.get_goal_progress(&therapist, &plan_id, &goal_id);
     assert_eq!(progress.len(), 5);
     assert_eq!(progress.get(0).unwrap().current_value, 50);
     assert_eq!(progress.get(4).unwrap().current_value, 90);
@@ -887,8 +887,10 @@ fn test_goal_progress_wrong_plan_returns_empty() {
         &2000u64,
     );
 
-    // Query with wrong plan_id → empty
-    let progress = client.get_goal_progress(&(plan_id + 99), &goal_id);
+    // A second, unrelated plan that the same therapist is still bound to (so the
+    // authorization check passes), but the goal doesn't belong to it → empty.
+    let (_, other_plan_id) = create_plan(&env, &client, &patient, &therapist);
+    let progress = client.get_goal_progress(&therapist, &other_plan_id, &goal_id);
     assert_eq!(progress.len(), 0);
 }
 
@@ -930,7 +932,7 @@ fn test_get_therapy_sessions_paged_first_page() {
 
     add_sessions(&env, &client, plan_id, 7);
 
-    let page = client.get_therapy_sessions_paged(&plan_id, &0u32, &3u32);
+    let page = client.get_therapy_sessions_paged(&therapist, &plan_id, &0u32, &3u32);
     assert_eq!(page.items.len(), 3);
     assert!(page.has_more);
 }
@@ -945,7 +947,7 @@ fn test_get_therapy_sessions_paged_last_page() {
 
     add_sessions(&env, &client, plan_id, 7);
 
-    let page = client.get_therapy_sessions_paged(&plan_id, &2u32, &3u32);
+    let page = client.get_therapy_sessions_paged(&therapist, &plan_id, &2u32, &3u32);
     assert_eq!(page.items.len(), 1); // 7 items, pages of 3: [0..3), [3..6), [6..7)
     assert!(!page.has_more);
 }
@@ -958,7 +960,7 @@ fn test_get_therapy_sessions_paged_empty() {
     let client = RehabilitationServicesContractClient::new(&env, &contract_id);
     let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
 
-    let page = client.get_therapy_sessions_paged(&plan_id, &0u32, &10u32);
+    let page = client.get_therapy_sessions_paged(&therapist, &plan_id, &0u32, &10u32);
     assert_eq!(page.items.len(), 0);
     assert!(!page.has_more);
 }
@@ -973,7 +975,7 @@ fn test_get_therapy_sessions_paged_beyond_range() {
 
     add_sessions(&env, &client, plan_id, 3);
 
-    let page = client.get_therapy_sessions_paged(&plan_id, &99u32, &10u32);
+    let page = client.get_therapy_sessions_paged(&therapist, &plan_id, &99u32, &10u32);
     assert_eq!(page.items.len(), 0);
     assert!(!page.has_more);
 }
@@ -989,7 +991,7 @@ fn test_get_therapy_sessions_paged_page_size_clamped() {
     add_sessions(&env, &client, plan_id, 5);
 
     // page_size > MAX_PAGE_SIZE (50) should be clamped — returns at most 50
-    let page = client.get_therapy_sessions_paged(&plan_id, &0u32, &200u32);
+    let page = client.get_therapy_sessions_paged(&therapist, &plan_id, &0u32, &200u32);
     assert_eq!(page.items.len(), 5); // only 5 sessions, all fit in one page
     assert!(!page.has_more);
 }
@@ -1013,11 +1015,11 @@ fn test_get_progress_notes_paged() {
         );
     }
 
-    let page = client.get_progress_notes_paged(&plan_id, &0u32, &3u32);
+    let page = client.get_progress_notes_paged(&therapist, &plan_id, &0u32, &3u32);
     assert_eq!(page.items.len(), 3);
     assert!(page.has_more);
 
-    let page2 = client.get_progress_notes_paged(&plan_id, &1u32, &3u32);
+    let page2 = client.get_progress_notes_paged(&therapist, &plan_id, &1u32, &3u32);
     assert_eq!(page2.items.len(), 1);
     assert!(!page2.has_more);
 }
@@ -1047,7 +1049,7 @@ fn test_plan_version_is_per_plan_not_global() {
         &120u32,
         &9000u64,
     );
-    assert_eq!(client.get_measurable_goal(&g1).plan_version, 0);
+    assert_eq!(client.get_measurable_goal(&therapist, &g1).plan_version, 0);
 
     // Second goal on plan_a should have plan_version == 1.
     let g2 = client.set_rehabilitation_goal(
@@ -1056,7 +1058,7 @@ fn test_plan_version_is_per_plan_not_global() {
         &130u32,
         &9001u64,
     );
-    assert_eq!(client.get_measurable_goal(&g2).plan_version, 1);
+    assert_eq!(client.get_measurable_goal(&therapist, &g2).plan_version, 1);
 }
 
 #[test]
@@ -1110,20 +1112,276 @@ fn test_persistent_storage_bounded_instance_size() {
     }
 
     // Reading plan_a must succeed without touching sessions from plan_b or plan_c.
-    let sessions_a = client.get_therapy_sessions(&plan_a);
+    let sessions_a = client.get_therapy_sessions(&therapist, &plan_a);
     assert_eq!(sessions_a.len(), 5);
 
     // plan_b and plan_c are independent: their session counts are also 5, not 15.
-    let sessions_b = client.get_therapy_sessions(&plan_b);
+    let sessions_b = client.get_therapy_sessions(&therapist, &plan_b);
     assert_eq!(sessions_b.len(), 5);
 
-    let sessions_c = client.get_therapy_sessions(&plan_c);
+    let sessions_c = client.get_therapy_sessions(&therapist, &plan_c);
     assert_eq!(sessions_c.len(), 5);
 
     // Goals across plans remain isolated.
     let g_a = client.set_rehabilitation_goal(&plan_a, &Symbol::new(&env, "strength"), &100u32, &9000u64);
     let g_b = client.set_rehabilitation_goal(&plan_b, &Symbol::new(&env, "strength"), &100u32, &9000u64);
     assert_ne!(g_a, g_b);
-    assert_eq!(client.get_measurable_goal(&g_a).plan_id, plan_a);
-    assert_eq!(client.get_measurable_goal(&g_b).plan_id, plan_b);
+    assert_eq!(client.get_measurable_goal(&therapist, &g_a).plan_id, plan_a);
+    assert_eq!(client.get_measurable_goal(&therapist, &g_b).plan_id, plan_b);
+}
+
+// ── Getter access control (#748) ─────────────────────────────────────────────
+//
+// Rehabilitation-services has no separate care-team roster: each evaluation/plan
+// only records a single treating therapist and, via the evaluation, a single
+// patient. So "bound to the record" collapses to exactly those two parties —
+// there is no third "care-team member" case to exercise here, unlike care-plan's
+// multi-provider `is_bound_to_plan`. Each shape of getter below is checked for:
+// the treating therapist can read, the patient can read, and an unrelated
+// address is rejected.
+
+#[test]
+fn test_get_evaluation_access_control() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let stranger = Address::generate(&env);
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+
+    let eval_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let limitations = Vec::from_array(&env, [String::from_str(&env, "Limited ROM")]);
+    let eval_id = client.conduct_pt_evaluation(
+        &patient,
+        &therapist,
+        &1000u64,
+        &String::from_str(&env, "Lower back pain"),
+        &String::from_str(&env, "Chronic pain"),
+        &limitations,
+        &String::from_str(&env, "Independent"),
+        &eval_hash,
+    );
+
+    assert_eq!(
+        client.get_evaluation(&therapist, &eval_id).patient_id,
+        patient
+    );
+    assert_eq!(client.get_evaluation(&patient, &eval_id).patient_id, patient);
+    assert!(client.try_get_evaluation(&stranger, &eval_id).is_err());
+}
+
+#[test]
+fn test_get_rom_assessments_access_control() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let stranger = Address::generate(&env);
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+
+    let eval_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let limitations = Vec::from_array(&env, [String::from_str(&env, "Limited ROM")]);
+    let eval_id = client.conduct_pt_evaluation(
+        &patient,
+        &therapist,
+        &1000u64,
+        &String::from_str(&env, "Shoulder injury"),
+        &String::from_str(&env, "Pain on movement"),
+        &limitations,
+        &String::from_str(&env, "Active"),
+        &eval_hash,
+    );
+    client.assess_range_of_motion(
+        &eval_id,
+        &String::from_str(&env, "Shoulder"),
+        &String::from_str(&env, "Flexion"),
+        &120u32,
+        &Some(5u32),
+        &Some(String::from_str(&env, "Moderate")),
+    );
+
+    assert_eq!(
+        client.get_rom_assessments(&therapist, &eval_id).len(),
+        1
+    );
+    assert_eq!(client.get_rom_assessments(&patient, &eval_id).len(), 1);
+    assert!(client
+        .try_get_rom_assessments(&stranger, &eval_id)
+        .is_err());
+}
+
+#[test]
+fn test_get_treatment_plan_access_control() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let stranger = Address::generate(&env);
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    assert_eq!(client.get_treatment_plan(&therapist, &plan_id).plan_id, plan_id);
+    assert_eq!(client.get_treatment_plan(&patient, &plan_id).plan_id, plan_id);
+    assert!(client.try_get_treatment_plan(&stranger, &plan_id).is_err());
+}
+
+#[test]
+fn test_get_therapy_sessions_access_control() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let stranger = Address::generate(&env);
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+    add_sessions(&env, &client, plan_id, 2);
+
+    assert_eq!(client.get_therapy_sessions(&therapist, &plan_id).len(), 2);
+    assert_eq!(client.get_therapy_sessions(&patient, &plan_id).len(), 2);
+    assert!(client
+        .try_get_therapy_sessions(&stranger, &plan_id)
+        .is_err());
+}
+
+#[test]
+fn test_get_discharge_record_access_control() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let stranger = Address::generate(&env);
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    let final_outcomes_hash = BytesN::from_array(&env, &[3u8; 32]);
+    let hep_hash = BytesN::from_array(&env, &[4u8; 32]);
+    client.discharge_from_therapy(
+        &plan_id,
+        &5000u64,
+        &Symbol::new(&env, "goals_met"),
+        &Vec::new(&env),
+        &final_outcomes_hash,
+        &hep_hash,
+    );
+
+    assert_eq!(
+        client.get_discharge_record(&therapist, &plan_id).discharge_date,
+        5000u64
+    );
+    assert_eq!(
+        client.get_discharge_record(&patient, &plan_id).discharge_date,
+        5000u64
+    );
+    assert!(client
+        .try_get_discharge_record(&stranger, &plan_id)
+        .is_err());
+}
+
+#[test]
+fn test_get_treatment_plan_history_access_control() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let stranger = Address::generate(&env);
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+
+    assert_eq!(
+        client.get_treatment_plan_history(&therapist, &plan_id).len(),
+        1
+    );
+    assert_eq!(
+        client.get_treatment_plan_history(&patient, &plan_id).len(),
+        1
+    );
+    assert!(client
+        .try_get_treatment_plan_history(&stranger, &plan_id)
+        .is_err());
+}
+
+#[test]
+fn test_get_therapy_sessions_paged_access_control() {
+    let (env, patient, therapist) = create_test_env();
+    env.mock_all_auths();
+    let stranger = Address::generate(&env);
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+    add_sessions(&env, &client, plan_id, 2);
+
+    assert_eq!(
+        client
+            .get_therapy_sessions_paged(&therapist, &plan_id, &0u32, &10u32)
+            .items
+            .len(),
+        2
+    );
+    assert_eq!(
+        client
+            .get_therapy_sessions_paged(&patient, &plan_id, &0u32, &10u32)
+            .items
+            .len(),
+        2
+    );
+    assert!(client
+        .try_get_therapy_sessions_paged(&stranger, &plan_id, &0u32, &10u32)
+        .is_err());
+}
+
+#[test]
+fn test_get_measurable_goal_access_control() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let patient = Address::generate(&env);
+    let therapist = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+    let goal_id = client.set_rehabilitation_goal(
+        &plan_id,
+        &Symbol::new(&env, "range_of_motion"),
+        &120u32,
+        &2000u64,
+    );
+
+    assert_eq!(
+        client.get_measurable_goal(&therapist, &goal_id).goal_id,
+        goal_id
+    );
+    assert_eq!(
+        client.get_measurable_goal(&patient, &goal_id).goal_id,
+        goal_id
+    );
+    assert!(client
+        .try_get_measurable_goal(&stranger, &goal_id)
+        .is_err());
+}
+
+#[test]
+fn test_get_goal_progress_access_control() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let patient = Address::generate(&env);
+    let therapist = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let contract_id = env.register(RehabilitationServicesContract, ());
+    let client = RehabilitationServicesContractClient::new(&env, &contract_id);
+    let (_, plan_id) = create_plan(&env, &client, &patient, &therapist);
+    let goal_id = client.set_rehabilitation_goal(
+        &plan_id,
+        &Symbol::new(&env, "range_of_motion"),
+        &120u32,
+        &2000u64,
+    );
+    client.record_progress(&plan_id, &goal_id, &80u32, &1500u64);
+
+    assert_eq!(
+        client
+            .get_goal_progress(&therapist, &plan_id, &goal_id)
+            .len(),
+        1
+    );
+    assert_eq!(
+        client.get_goal_progress(&patient, &plan_id, &goal_id).len(),
+        1
+    );
+    assert!(client
+        .try_get_goal_progress(&stranger, &plan_id, &goal_id)
+        .is_err());
 }
