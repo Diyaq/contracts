@@ -27,9 +27,9 @@ use soroban_sdk::{contract,contracterror,contractimpl,contracttype,symbol_short,
 #[contracterror]
 #[derive(Copy,Clone,Debug,Eq,PartialEq)]
 #[repr(u32)]
-pub enum Error{NotInitialized=1,AlreadyInitialized=2,Unauthorized=3,ZeroAmount=4,InsufficientFunds=5,FundsCommitted=6}
+pub enum Error{NotInitialized=1,AlreadyInitialized=2,Unauthorized=3,ZeroAmount=4,InsufficientFunds=5,FundsCommitted=6,RecipientNotEligible=7,RecipientCapExceeded=8}
 #[contracttype]
-pub enum DataKey{Admin,PoolBalance,CommittedFunds,Deposit(Address)}
+pub enum DataKey{Admin,PoolBalance,CommittedFunds,Deposit(Address),Eligible(Address),RecipientAwards(Address),RecipientCap(Address)}
 #[contracttype]
 #[derive(Clone,Debug,Eq,PartialEq)]
 pub struct FundStats{pub pool_balance:i128,pub committed_balance:i128}
@@ -99,7 +99,27 @@ impl ScholarshipFundContract{
             let released=if amount<committed{amount}else{committed};
             env.storage().instance().set(&DataKey::CommittedFunds,&(committed-released));
         }
+        env.storage().persistent().set(&DataKey::RecipientAwards(recipient.clone()),&(prior_awards+amount));
         env.events().publish((symbol_short!("DISBURSE"),recipient),(amount,reason));
+        Ok(())
+    }
+    /// Admin-only: mark a recipient eligible/ineligible to receive disbursements.
+    pub fn set_recipient_eligibility(env:Env,admin:Address,recipient:Address,eligible:bool)->Result<(),Error>{
+        admin.require_auth();
+        let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
+        if admin!=stored{return Err(Error::Unauthorized);}
+        env.storage().persistent().set(&DataKey::Eligible(recipient.clone()),&eligible);
+        env.events().publish((symbol_short!("ELIGIBLE"),recipient),eligible);
+        Ok(())
+    }
+    /// Admin-only: set the maximum cumulative amount a recipient may receive across all disbursements.
+    /// A cap of `0` means no cap is enforced.
+    pub fn set_recipient_cap(env:Env,admin:Address,recipient:Address,cap:i128)->Result<(),Error>{
+        admin.require_auth();
+        let stored:Address=env.storage().instance().get(&DataKey::Admin).ok_or(Error::NotInitialized)?;
+        if admin!=stored{return Err(Error::Unauthorized);}
+        if cap<0{return Err(Error::ZeroAmount);}
+        env.storage().persistent().set(&DataKey::RecipientCap(recipient),&cap);
         Ok(())
     }
     pub fn get_stats(env:Env)->FundStats{FundStats{pool_balance:env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0),committed_balance:env.storage().instance().get(&DataKey::CommittedFunds).unwrap_or(0)}}
