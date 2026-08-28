@@ -360,6 +360,14 @@ impl AllergyManagement {
     ) -> Result<(), Error> {
         provider_id.require_auth();
 
+        // Verify provider is registered (consistent with record_allergy and
+        // update_allergy_severity; an unregistered party must not be able to
+        // deactivate an allergy record, which would suppress future
+        // drug-allergy interaction warnings).
+        if !Self::is_registered_provider(&env, &provider_id) {
+            return Err(Error::Unauthorized);
+        }
+
         // #215 – resolution_date must not be future and must follow onset_date
         temporal::not_future(&env, resolution_date).map_err(|_| Error::InvalidDate)?;
 

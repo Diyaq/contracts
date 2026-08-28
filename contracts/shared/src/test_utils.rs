@@ -1,6 +1,9 @@
 #![cfg(test)]
 
-use soroban_sdk::{Address, BytesN, Env, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, BytesN, Env, Vec,
+};
 
 /// Generate a dummy hash filled with a specific byte value
 pub fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
@@ -10,10 +13,8 @@ pub fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
 /// Generate a vector of dummy addresses
 pub fn generate_addresses(env: &Env, n: usize) -> Vec<Address> {
     let mut addresses = Vec::new(env);
-    for i in 0..n {
-        let seed = (i as u8) % 256;
-        let addr = Address::from_contract_id(&env, &dummy_hash(env, seed));
-        addresses.push_back(addr);
+    for _ in 0..n {
+        addresses.push_back(Address::generate(env));
     }
     addresses
 }

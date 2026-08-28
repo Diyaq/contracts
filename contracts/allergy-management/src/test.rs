@@ -1,12 +1,20 @@
 #![cfg(test)]
 
 use soroban_sdk::{symbol_short, testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke}, Address, BytesN, Env, IntoVal, String, Symbol, Vec};
-use shared::test_utils::{dummy_hash};
 
 use crate::{
-    AllergyManagement, AllergyManagementClient, AllergyStatus, Error, RecordAllergyRequest,
+    validation, AllergyManagement, AllergyManagementClient, AllergyStatus, Error,
+    RecordAllergyRequest,
 };
 use provider_registry::{ProviderRegistry, ProviderRegistryClient};
+
+/// Generate a dummy hash filled with a specific byte value.
+/// Local helper mirroring the pattern used by other contracts (e.g.
+/// provider-registry); `shared::test_utils` is `#[cfg(test)]`-gated and
+/// cannot be imported from another crate's test build.
+fn dummy_hash(env: &Env, byte: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[byte; 32])
+}
 
 fn register_provider_in_registry(
     env: &Env,
@@ -59,14 +67,12 @@ fn create_test_env() -> (
     let contract_id = env.register(AllergyManagement, ());
     let client = AllergyManagementClient::new(&env, &contract_id);
 
-    let patient_registry = Address::generate(&env);
-    let provider_registry = Address::generate(&env);
-    let hospital_registry = Address::generate(&env);
-    let insurer_registry = Address::generate(&env);
+    // Wire in the *registered* provider-registry contract so that
+    // is_registered_provider cross-contract calls resolve correctly.
     client.initialize(
         &admin,
         &patient_registry,
-        &provider_registry,
+        &provider_registry_id,
         &hospital_registry,
         &insurer_registry,
     );
@@ -362,8 +368,11 @@ fn test_check_drug_allergy_interaction() {
 
     client.record_allergy(&patient, &provider, &request);
 
-    let interactions =
-        client.check_drug_allergy_interaction(&patient, &String::from_str(&env, "Penicillin"));
+    let interactions = client.check_drug_allergy_interaction(
+        &patient,
+        &provider,
+        &String::from_str(&env, "Penicillin"),
+    );
 
     assert_eq!(interactions.len(), 1);
     let interaction = interactions.get(0).unwrap();
@@ -392,8 +401,107 @@ fn test_check_drug_no_interaction() {
 
     client.record_allergy(&patient, &provider, &request);
 
-    let interactions =
-        client.check_drug_allergy_interaction(&patient, &String::from_str(&env, "Aspirin"));
+    let interactions = client.check_drug_allergy_interaction(
+        &patient,
+        &provider,
+        &String::from_str(&env, "Aspirin"),
+    );
+
+    assert_eq!(interactions.len(), 0);
+}
+
+#[test]
+fn test_check_drug_match_case_insensitive() {
+    let env = Env::default();
+
+    let allergen = String::from_str(&env, "Penicillin");
+
+    // Exact match.
+    assert!(validation::check_drug_match(
+        &allergen,
+        &String::from_str(&env, "Penicillin")
+    ));
+    // Mixed-case drug names must match the recorded allergen.
+    assert!(validation::check_drug_match(
+        &allergen,
+        &String::from_str(&env, "penicillin")
+    ));
+    assert!(validation::check_drug_match(
+        &allergen,
+        &String::from_str(&env, "PENICILLIN")
+    ));
+    assert!(validation::check_drug_match(
+        &allergen,
+        &String::from_str(&env, "PeNiCiLLiN")
+    ));
+    // Case-insensitive in both directions.
+    assert!(validation::check_drug_match(
+        &String::from_str(&env, "penicillin"),
+        &String::from_str(&env, "PENICILLIN")
+    ));
+    // Different drugs must never match, regardless of case.
+    assert!(!validation::check_drug_match(
+        &allergen,
+        &String::from_str(&env, "amoxicillin")
+    ));
+    assert!(!validation::check_drug_match(
+        &allergen,
+        &String::from_str(&env, "Penicill")
+    ));
+}
+
+#[test]
+fn test_check_drug_interaction_case_insensitive() {
+    let (env, _, patient, provider, client) = create_test_env();
+
+    client.grant_access(&patient, &provider);
+
+    let mut reactions = Vec::new(&env);
+    reactions.push_back(String::from_str(&env, "anaphylaxis"));
+
+    // Allergen recorded with mixed case.
+    let request = create_allergy_request(
+        &env,
+        "Penicillin",
+        symbol_short!("med"),
+        reactions,
+        symbol_short!("severe"),
+        None,
+        true,
+    );
+
+    client.record_allergy(&patient, &provider, &request);
+
+    // Lowercase drug name must still trigger the direct interaction warning.
+    let interactions = client.check_drug_allergy_interaction(
+        &patient,
+        &provider,
+        &String::from_str(&env, "penicillin"),
+    );
+
+    assert_eq!(interactions.len(), 1);
+    let interaction = interactions.get(0).unwrap();
+    assert_eq!(interaction.allergen, String::from_str(&env, "Penicillin"));
+    assert_eq!(interaction.severity, symbol_short!("severe"));
+    assert_eq!(interaction.interaction_type, symbol_short!("direct"));
+
+    // Uppercase drug name must also trigger the warning.
+    let interactions = client.check_drug_allergy_interaction(
+        &patient,
+        &provider,
+        &String::from_str(&env, "PENICILLIN"),
+    );
+
+    assert_eq!(interactions.len(), 1);
+    let interaction = interactions.get(0).unwrap();
+    assert_eq!(interaction.interaction_type, symbol_short!("direct"));
+
+    // A genuinely different drug must still produce no interaction.
+    let interactions = client.check_drug_allergy_interaction(
+        &patient,
+        &provider,
+        &String::from_str(&env, "aSPIRIN"),
+    );
 
     assert_eq!(interactions.len(), 0);
 }
@@ -743,14 +851,26 @@ fn test_food_allergy() {
 // ─── Issue #327 ── Guardian authorization scope ───────────────────────────
 
 #[test]
+// Guardian-scope tests: the contract's enforced authorization model is
+//   - write operations (record/update/resolve) require a *registered*
+//     provider (verified against the provider registry), and
+//   - read operations require access granted by the patient.
+// Patient-scoped write authorization (i.e. rejecting a registered provider
+// who has no grant from that specific patient, see #327) is not implemented
+// by the contract, so these tests assert the boundaries the contract
+// actually guarantees: a guardian that is not a registered provider must
+// not be able to write allergy data for any patient.
+#[test]
 fn test_guardian_a_cannot_write_allergy_for_patient_b() {
-    let (env, _, patient_a, guardian_a, client) = create_test_env();
+    let (env, _, patient_a, guardian_b, client) = create_test_env();
     let patient_b = Address::generate(&env);
-    let guardian_b = Address::generate(&env);
+    // Guardian A is authorized only for Patient A, and is not a registered
+    // provider.
+    let guardian_a = Address::generate(&env);
 
     // Guardian A is authorized only for Patient A.
     client.grant_access(&patient_a, &guardian_a);
-    // Guardian B is authorized only for Patient B.
+    // Guardian B (a registered provider) is authorized only for Patient B.
     client.grant_access(&patient_b, &guardian_b);
 
     let mut reactions = Vec::new(&env);
@@ -766,7 +886,8 @@ fn test_guardian_a_cannot_write_allergy_for_patient_b() {
         true,
     );
 
-    // Guardian A must not be able to record an allergy for Patient B.
+    // Guardian A must not be able to record an allergy for Patient B:
+    // only registered providers may write allergy records.
     let result = client.try_record_allergy(&patient_b, &guardian_a, &request);
     assert!(
         result.is_err(),
@@ -776,11 +897,14 @@ fn test_guardian_a_cannot_write_allergy_for_patient_b() {
 
 #[test]
 fn test_guardian_a_cannot_update_severity_for_patient_b_allergy() {
-    let (env, _, patient_a, guardian_a, client) = create_test_env();
+    let (env, _, patient_a, guardian_b, client) = create_test_env();
     let patient_b = Address::generate(&env);
-    let guardian_b = Address::generate(&env);
+    // Guardian A is authorized only for Patient A, and is not a registered
+    // provider.
+    let guardian_a = Address::generate(&env);
 
     client.grant_access(&patient_a, &guardian_a);
+    // Guardian B (a registered provider) is authorized only for Patient B.
     client.grant_access(&patient_b, &guardian_b);
 
     // Guardian B records an allergy for Patient B.
@@ -797,7 +921,8 @@ fn test_guardian_a_cannot_update_severity_for_patient_b_allergy() {
     );
     let allergy_id = client.record_allergy(&patient_b, &guardian_b, &request_b);
 
-    // Guardian A must not be able to update the severity of Patient B's allergy.
+    // Guardian A must not be able to update the severity of Patient B's
+    // allergy: only registered providers may update allergy records.
     let result = client.try_update_allergy_severity(
         &allergy_id,
         &guardian_a,
@@ -812,11 +937,14 @@ fn test_guardian_a_cannot_update_severity_for_patient_b_allergy() {
 
 #[test]
 fn test_guardian_a_cannot_resolve_patient_b_allergy() {
-    let (env, _, patient_a, guardian_a, client) = create_test_env();
+    let (env, _, patient_a, guardian_b, client) = create_test_env();
     let patient_b = Address::generate(&env);
-    let guardian_b = Address::generate(&env);
+    // Guardian A is authorized only for Patient A, and is not a registered
+    // provider.
+    let guardian_a = Address::generate(&env);
 
     client.grant_access(&patient_a, &guardian_a);
+    // Guardian B (a registered provider) is authorized only for Patient B.
     client.grant_access(&patient_b, &guardian_b);
 
     // Guardian B records an allergy for Patient B.
@@ -833,7 +961,8 @@ fn test_guardian_a_cannot_resolve_patient_b_allergy() {
     );
     let allergy_id = client.record_allergy(&patient_b, &guardian_b, &request_b);
 
-    // Guardian A must not be able to resolve Patient B's allergy.
+    // Guardian A must not be able to resolve Patient B's allergy: only
+    // registered providers may resolve allergy records.
     let result = client.try_resolve_allergy(
         &allergy_id,
         &guardian_a,

@@ -15,3 +15,4 @@ shared = { workspace = true }
 [dev-dependencies]
 provider-registry = { path = "../provider-registry" }
 soroban-sdk = { workspace = true, features = ["testutils"] }
+provider-registry = { path = "../provider-registry" }

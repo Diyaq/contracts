@@ -27,49 +27,51 @@ fn make_result(env: &Env) -> TestResult {
     }
 }
 
-/// Wires up a ProviderRegistry, initializes `lab_client` against it, and
-/// registers a provider on it. Returns the registered provider's address.
-///
-/// `order_lab_test` requires the ordering provider to be registered on the
-/// configured ProviderRegistry (see `Error::ProviderNotRegistered`), so any
-/// test that needs to create a real order via `order_lab_test` must go
-/// through this setup first.
-fn setup_registered_provider(env: &Env, lab_client: &LabManagementContractClient) -> Address {
+
+/// Set up an env with a registered provider registry and a registered
+/// provider, mirroring test_provider_registration_verification.
+/// (order_lab_test verifies provider registration against the registry.)
+fn setup_env_with_registered_provider()
+-> (Env, LabManagementContractClient<'static>, Address, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Register + initialize the provider registry
     let provider_registry_id = env.register_contract(None, ProviderRegistry);
-    let pr_client = ProviderRegistryClient::new(env, &provider_registry_id);
-    let admin = Address::generate(env);
+    let pr_client = ProviderRegistryClient::new(&env, &provider_registry_id);
+    let admin = Address::generate(&env);
     pr_client.initialize(&admin);
 
-    lab_client.initialize(&provider_registry_id);
+    // Register the lab-management contract, pointing it at the registry
+    let contract_id = env.register(LabManagementContract, ());
+    let client = LabManagementContractClient::new(&env, &contract_id);
+    client.initialize(&provider_registry_id);
 
-    let provider = Address::generate(env);
+    // Register the provider that will place lab orders
+    let provider = Address::generate(&env);
     pr_client.register_provider(
         &admin,
         &provider,
-        &String::from_str(env, "Dr. Lab"),
-        &String::from_str(env, "Pathology"),
-        &String::from_str(env, "LAB123"),
-        &BytesN::from_array(env, &[1; 32]),
+        &String::from_str(&env, "Dr. Lab"),
+        &String::from_str(&env, "Pathology"),
+        &String::from_str(&env, "LAB123"),
+        &BytesN::from_array(&env, &[1u8; 32]),
         &admin,
-        &BytesN::from_array(env, &[2; 32]),
+        &BytesN::from_array(&env, &[2u8; 32]),
         &(env.ledger().timestamp() + 86400),
-        &BytesN::from_array(env, &[3; 32]),
+        &BytesN::from_array(&env, &[3u8; 32]),
     );
-    provider
+
+    let patient = Address::generate(&env);
+    (env, client, provider, patient)
 }
 
 // ── existing tests (unchanged behaviour) ─────────────────────────────────────
 
 #[test]
 fn test_happy_path_lifecycle() {
-    let env = Env::default();
-    env.mock_all_auths();
+    let (env, client, provider, patient) = setup_env_with_registered_provider();
 
-    let contract_id = env.register(LabManagementContract, ());
-    let client = LabManagementContractClient::new(&env, &contract_id);
-
-    let provider = Address::generate(&env);
-    let patient = Address::generate(&env);
     let lab = Address::generate(&env);
 
     let order_id = client.order_lab_test(&provider, &patient, &make_req(&env));
@@ -87,15 +89,10 @@ fn test_happy_path_lifecycle() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #4)")]
+#[should_panic(expected = "Error(Contract, #3)")]
 fn test_fail_qc_check() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(LabManagementContract, ());
-    let client = LabManagementContractClient::new(&env, &contract_id);
+    let (env, client, provider, patient) = setup_env_with_registered_provider();
 
-    let provider = Address::generate(&env);
-    let patient = Address::generate(&env);
     let lab = Address::generate(&env);
 
     let req = OrderRequest {
@@ -107,6 +104,8 @@ fn test_fail_qc_check() {
     };
 
     let id = client.order_lab_test(&provider, &patient, &req);
+    // The order must be assigned to the lab before results can be submitted.
+    client.assign_lab(&id, &lab, &0);
     client.submit_results(
         &id,
         &lab,
@@ -237,13 +236,7 @@ fn test_fail_assign_nonexistent_order() {
 /// IDs are assigned sequentially starting from 0.
 #[test]
 fn test_order_ids_are_sequential() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(LabManagementContract, ());
-    let client = LabManagementContractClient::new(&env, &contract_id);
-
-    let provider = Address::generate(&env);
-    let patient = Address::generate(&env);
+    let (env, client, provider, patient) = setup_env_with_registered_provider();
 
     let id0 = client.order_lab_test(&provider, &patient, &make_req(&env));
     let id1 = client.order_lab_test(&provider, &patient, &make_req(&env));
@@ -258,13 +251,8 @@ fn test_order_ids_are_sequential() {
 /// return the other.  This guards against key-collision caused by truncation.
 #[test]
 fn test_distinct_ids_store_independent_records() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(LabManagementContract, ());
-    let client = LabManagementContractClient::new(&env, &contract_id);
+    let (env, client, provider, patient) = setup_env_with_registered_provider();
 
-    let provider = Address::generate(&env);
-    let patient = Address::generate(&env);
     let lab_a = Address::generate(&env);
     let lab_b = Address::generate(&env);
 
@@ -301,21 +289,16 @@ fn test_distinct_ids_store_independent_records() {
 /// above u32::MAX) must be stored and retrieved correctly.
 #[test]
 fn test_id_above_u32_max_stored_and_retrieved() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(LabManagementContract, ());
+    let (env, client, provider, patient) = setup_env_with_registered_provider();
 
     // Seed the counter to u32::MAX so the next order gets ID u32::MAX.
     // We write directly into instance storage to avoid ordering u32::MAX orders.
-    env.as_contract(&contract_id, || {
+    env.as_contract(&client.address, || {
         env.storage()
             .instance()
             .set(&DataKey::LabCounter, &(u32::MAX as u64));
     });
 
-    let client = LabManagementContractClient::new(&env, &contract_id);
-    let provider = Address::generate(&env);
-    let patient = Address::generate(&env);
     let lab = Address::generate(&env);
 
     // This order gets ID == u32::MAX (0xFFFF_FFFF).
@@ -336,21 +319,16 @@ fn test_id_above_u32_max_stored_and_retrieved() {
 /// An ID strictly above u32::MAX must also work without any truncation.
 #[test]
 fn test_id_strictly_above_u32_max_no_collision() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(LabManagementContract, ());
+    let (env, client, provider, patient) = setup_env_with_registered_provider();
 
     // Seed counter to u32::MAX so the first call returns u32::MAX,
     // and the second call returns u32::MAX + 1.
-    env.as_contract(&contract_id, || {
+    env.as_contract(&client.address, || {
         env.storage()
             .instance()
             .set(&DataKey::LabCounter, &(u32::MAX as u64));
     });
 
-    let client = LabManagementContractClient::new(&env, &contract_id);
-    let provider = Address::generate(&env);
-    let patient = Address::generate(&env);
     let lab_a = Address::generate(&env);
     let lab_b = Address::generate(&env);
 
@@ -378,24 +356,18 @@ fn test_id_strictly_above_u32_max_no_collision() {
 /// When the counter is at u64::MAX, order_lab_test must panic with
 /// OrderIdOverflow rather than silently wrapping.
 #[test]
-#[should_panic(expected = "Error(Contract, #5)")]
+#[should_panic(expected = "Error(Contract, #4)")]
 fn test_order_id_overflow_panics() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(LabManagementContract, ());
+    let (env, client, provider, patient) = setup_env_with_registered_provider();
 
     // Seed the counter to u64::MAX so the next increment overflows.
-    env.as_contract(&contract_id, || {
+    env.as_contract(&client.address, || {
         env.storage()
             .instance()
             .set(&DataKey::LabCounter, &u64::MAX);
     });
 
-    let client = LabManagementContractClient::new(&env, &contract_id);
-    let provider = Address::generate(&env);
-    let patient = Address::generate(&env);
-
-    // This must panic with OrderIdOverflow (error code 5).
+    // This must panic with OrderIdOverflow (error code 4).
     client.order_lab_test(&provider, &patient, &make_req(&env));
 }
 
@@ -440,20 +412,15 @@ fn test_provider_registration_verification() {
     // Order from registered provider should succeed
     let result = client.try_order_lab_test(&registered_provider, &patient, &make_req(&env));
     assert!(result.is_ok());
-    let order_id = result.unwrap();
-    assert_eq!(order_id, Ok(0));
+    let order_id = result.unwrap().unwrap();
+    assert_eq!(order_id, 0);
 }
 
 #[test]
 #[should_panic(expected = "Error(Contract, #2)")]
 fn test_submit_results_by_unassigned_lab_returns_error() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(LabManagementContract, ());
-    let client = LabManagementContractClient::new(&env, &contract_id);
+    let (env, client, provider, patient) = setup_env_with_registered_provider();
 
-    let provider = Address::generate(&env);
-    let patient = Address::generate(&env);
     let lab_a = Address::generate(&env);
     let lab_b = Address::generate(&env);
 
@@ -471,19 +438,16 @@ fn test_submit_results_by_unassigned_lab_returns_error() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")]
+#[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_assign_lab_without_auth_returns_error() {
-    let env = Env::default();
-    // Don't mock all auths - we want to test auth failure
-    let contract_id = env.register(LabManagementContract, ());
-    let client = LabManagementContractClient::new(&env, &contract_id);
+    let (env, client, provider, patient) = setup_env_with_registered_provider();
 
-    let provider = Address::generate(&env);
-    let patient = Address::generate(&env);
     let lab = Address::generate(&env);
 
     let order_id = client.order_lab_test(&provider, &patient, &make_req(&env));
-    
-    // This should fail because provider_id.require_auth() is not satisfied
+
+    // Disable mocked auths: assign_lab requires the order's provider to
+    // authorize, which is no longer satisfied.
+    env.mock_auths(&[]);
     client.assign_lab(&order_id, &lab, &3600);
 }
