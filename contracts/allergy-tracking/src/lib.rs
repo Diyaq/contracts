@@ -453,6 +453,14 @@ impl AllergyTrackingContract {
             .get(&allergy_key)
             .ok_or(Error::AllergyNotFound)?;
 
+        // Only the recording provider, a provider the patient has granted access
+        // to, or the patient themselves may update severity.
+        if provider_id != allergy.provider_id
+            && !Self::check_access(&env, &allergy.patient_id, &provider_id)
+        {
+            return Err(Error::Unauthorized);
+        }
+
         if allergy.status == AllergyStatus::Resolved {
             return Err(Error::AlreadyResolved);
         }
@@ -521,6 +529,14 @@ impl AllergyTrackingContract {
             .persistent()
             .get(&allergy_key)
             .ok_or(Error::AllergyNotFound)?;
+
+        // Only the recording provider, a provider the patient has granted access
+        // to, or the patient themselves may resolve the allergy.
+        if provider_id != allergy.provider_id
+            && !Self::check_access(&env, &allergy.patient_id, &provider_id)
+        {
+            return Err(Error::Unauthorized);
+        }
 
         if allergy.status == AllergyStatus::Resolved {
             return Err(Error::AlreadyResolved);

@@ -635,3 +635,111 @@ fn test_enrolment_after_phase_advance_uses_updated_trial() {
     let enrol = client.get_enrollment(&enrollment_id, &pi);
     assert_eq!(enrol.trial_record_id, trial_id);
 }
+
+// ── #757: per-site enrollment quota release on withdrawal ──────────────────
+
+#[test]
+fn test_withdraw_participant_decrements_site_enrolled_and_allows_re_enrollment() {
+    let (env, _, pi, _, client) = create_test_env();
+    let (trial_id, site_a, _, coord_a, _) = setup_trial_with_sites(&env, &client, &pi);
+
+    // site_a has max_enrollment = 50; fill it up with 50 participants
+    let participants: Vec<Address> = (0..50)
+        .map(|_| Address::generate(&env))
+        .collect();
+
+    let mut enrollment_ids = Vec::new(&env);
+    for (idx, participant) in participants.iter().enumerate() {
+        let enrollment_id = client.enrol_participant_at_site(
+            &trial_id,
+            &site_a,
+            &coord_a,
+            participant,
+            &symbol_short!("armA"),
+            &1100,
+            &create_protocol_hash(&env),
+            &String::from_str(&env, &format!("P{:02}", idx)),
+        );
+        enrollment_ids.push_back(enrollment_id);
+    }
+
+    // site_a is now full; 51st enrolment must fail
+    let extra = Address::generate(&env);
+    let result = client.try_enrol_participant_at_site(
+        &trial_id,
+        &site_a,
+        &coord_a,
+        &extra,
+        &symbol_short!("armA"),
+        &1100,
+        &create_protocol_hash(&env),
+        &String::from_str(&env, "PEXTRA"),
+    );
+    assert_eq!(result, Err(Ok(Error::SiteEnrollmentFull)));
+
+    // Withdraw the first participant
+    client.withdraw_participant(
+        &enrollment_ids.get(0).unwrap(),
+        &1200,
+        &symbol_short!("consent"),
+        &false,
+    );
+
+    // Now the 51st enrolment must succeed (site quota released)
+    let new_enrollment_id = client.enrol_participant_at_site(
+        &trial_id,
+        &site_a,
+        &coord_a,
+        &extra,
+        &symbol_short!("armA"),
+        &1200,
+        &create_protocol_hash(&env),
+        &String::from_str(&env, "PEXTRA"),
+    );
+
+    let enrollment = client.get_enrollment(&new_enrollment_id, &pi);
+    assert_eq!(enrollment.site_id, Some(site_a));
+}
+
+#[test]
+fn test_re_enroll_at_site_increments_site_enrolled() {
+    let (env, _, pi, _, client) = create_test_env();
+    let (trial_id, site_a, _, coord_a, _) = setup_trial_with_sites(&env, &client, &pi);
+
+    let participant = Address::generate(&env);
+
+    // Initial enrolment at site_a
+    let enrollment_id = client.enrol_participant_at_site(
+        &trial_id,
+        &site_a,
+        &coord_a,
+        &participant,
+        &symbol_short!("armA"),
+        &1100,
+        &create_protocol_hash(&env),
+        &String::from_str(&env, "P001"),
+    );
+
+    // Withdraw
+    client.withdraw_participant(
+        &enrollment_id,
+        &1200,
+        &symbol_short!("consent"),
+        &false,
+    );
+
+    // Re-enrol at the same site
+    let new_enrollment_id = client.re_enroll_participant(
+        &trial_id,
+        &participant,
+        &enrollment_id,
+        &create_protocol_hash(&env),
+        &symbol_short!("armB"),
+        &1300,
+        &String::from_str(&env, "P001-R1"),
+    );
+
+    let enrollment = client.get_enrollment(&new_enrollment_id, &pi);
+    assert_eq!(enrollment.site_id, Some(site_a));
+    assert_eq!(enrollment.prior_enrollment_id, Some(enrollment_id));
+}

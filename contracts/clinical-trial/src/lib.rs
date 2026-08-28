@@ -290,7 +290,7 @@ impl ClinicalTrialContract {
 
         let mut met_inclusion = Vec::new(&env);
         let mut met_exclusion = Vec::new(&env);
-        let disqualifying_factors = Vec::new(&env);
+        let mut disqualifying_factors = Vec::new(&env);
         let mut evaluation_artifacts = Vec::new(&env);
 
         for rule in criteria.inclusion_criteria.iter() {
@@ -315,6 +315,21 @@ impl ClinicalTrialContract {
             );
             met_exclusion.push_back(matched);
             evaluation_artifacts.push_back(artifact);
+        }
+
+        // Populate disqualifying_factors from failed inclusion and matched exclusion rules
+        for (i, artifact) in evaluation_artifacts.iter().enumerate() {
+            if i < criteria.inclusion_criteria.len() {
+                // Inclusion rule
+                if !artifact.passed {
+                    disqualifying_factors.push_back(artifact.explanation.clone());
+                }
+            } else {
+                // Exclusion rule
+                if artifact.passed {
+                    disqualifying_factors.push_back(artifact.explanation.clone());
+                }
+            }
         }
 
         let eligible = met_inclusion.iter().all(|x| x) && met_exclusion.iter().all(|x| !x);
@@ -569,6 +584,16 @@ impl ClinicalTrialContract {
             trial.current_enrollment -= 1;
         }
         storage::save_trial(&env, &trial);
+
+        // Decrement site enrollment if this enrollment was site-scoped
+        if let Some(site_id) = enrollment.site_id {
+            let mut site = storage::get_site(&env, enrollment.trial_record_id, site_id)
+                .ok_or(Error::SiteNotFound)?;
+            if site.enrolled > 0 {
+                site.enrolled -= 1;
+            }
+            storage::save_site(&env, &site);
+        }
 
         // Emit withdrawal event
         ParticipantWithdrawn {
@@ -1070,6 +1095,15 @@ impl ClinicalTrialContract {
             return Err(Error::DuplicateEnrollment);
         }
 
+        // Per-site cap check if re-enrolling at a site
+        if let Some(site_id) = prior.site_id {
+            let mut site = storage::get_site(&env, trial_record_id, site_id)
+                .ok_or(Error::SiteNotFound)?;
+            if site.enrolled >= site.max_enrollment {
+                return Err(Error::SiteEnrollmentFull);
+            }
+        }
+
         let enrollment_id = storage::get_next_enrollment_id(&env);
 
         let enrollment = ParticipantEnrollment {
@@ -1095,6 +1129,14 @@ impl ClinicalTrialContract {
 
         trial.current_enrollment += 1;
         storage::save_trial(&env, &trial);
+
+        // Increment site enrollment if re-enrolling at a site
+        if let Some(site_id) = prior.site_id {
+            let mut site = storage::get_site(&env, trial_record_id, site_id)
+                .ok_or(Error::SiteNotFound)?;
+            site.enrolled += 1;
+            storage::save_site(&env, &site);
+        }
 
         ParticipantReEnrolled {
             enrollment_id,

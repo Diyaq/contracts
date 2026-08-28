@@ -1305,6 +1305,7 @@ name = "prenatal-pediatric"
 version = "0.1.0"
 dependencies = [
  "Contracts",
+ "provider-registry",
  "soroban-sdk",
 ]
 
@@ -1500,6 +1501,7 @@ name = "referral"
 version = "0.1.0"
 dependencies = [
  "Contracts",
+ "provider-registry",
  "shared",
  "soroban-sdk",
 ]

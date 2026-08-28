@@ -42,7 +42,7 @@ pub trait EmergencyMedicalInfoInterface {
         alert_type: Symbol,
         alert_text_hash: BytesN<32>,
         severity: Symbol,
-    );
+    ) -> Result<(), soroban_sdk::Error>;
 }
 
 #[contracterror]
@@ -292,13 +292,17 @@ impl MentalHealthContract {
         let alert_type = Symbol::new(env, "crisis_escalation");
         let alert_text_hash = BytesN::from_array(env, &[0u8; 32]);
 
-        crisis_client.add_critical_alert(
+        let alert_result = crisis_client.try_add_critical_alert(
             &patient_token,
             provider_id,
             &alert_type,
             &alert_text_hash,
             &severity,
         );
+
+        if alert_result.is_err() {
+            return Err(Error::EscalationFailed);
+        }
 
         Ok(())
     }
@@ -426,6 +430,14 @@ impl MentalHealthContract {
             .get(&DataKey::Assessment(assessment_id))
             .ok_or(Error::NotFound)?;
 
+        // Validate explicit consent for recording the PHQ-9 score
+        Self::validate_explicit_consent(
+            &env,
+            &assessment.patient_id,
+            Symbol::new(&env, "phq9"),
+            &provider_id,
+        )?;
+
         assessment.phq9_score = Some(total_score);
         env.storage()
             .persistent()
@@ -453,6 +465,14 @@ impl MentalHealthContract {
             .persistent()
             .get(&DataKey::Assessment(assessment_id))
             .ok_or(Error::NotFound)?;
+
+        // Validate explicit consent for recording the GAD-7 score
+        Self::validate_explicit_consent(
+            &env,
+            &assessment.patient_id,
+            Symbol::new(&env, "gad7"),
+            &provider_id,
+        )?;
 
         assessment.gad7_score = Some(total_score);
         env.storage()

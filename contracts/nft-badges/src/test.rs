@@ -16,6 +16,17 @@ fn setup() -> (Env, NftBadgesContractClient<'static>, Address) {
 fn s(env: &Env, v: &str) -> String { String::from_str(env, v) }
 
 #[test]
+#[should_panic]
+fn initialize_requires_admin_auth() {
+    let env = Env::default();
+    let contract_id = env.register(NftBadgesContract, ());
+    let client = NftBadgesContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    client.initialize(&admin);
+}
+
+#[test]
 fn mint_creates_badge_with_correct_metadata() {
     let (env, client, admin) = setup();
     let student = Address::generate(&env);

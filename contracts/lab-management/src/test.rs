@@ -121,12 +121,102 @@ fn test_critical_value_alerting() {
     env.mock_all_auths();
     let contract_id = env.register(LabManagementContract, ());
     let client = LabManagementContractClient::new(&env, &contract_id);
+    let provider = setup_registered_provider(&env, &client);
+
+    let patient = Address::generate(&env);
+    let lab = Address::generate(&env);
+    let test_code = String::from_str(&env, "12345-1");
+    let value = String::from_str(&env, "9.0");
+
+    let order_id = client.order_lab_test(&provider, &patient, &make_req(&env));
+    client.assign_lab(&order_id, &lab, &3600);
+
+    client.flag_critical_value(&order_id, &lab, &test_code, &value);
+}
+
+/// A lab that has never been assigned to the order (order.lab_id is None)
+/// must not be able to flag a critical value for it.
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_flag_critical_value_unassigned_lab_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(LabManagementContract, ());
+    let client = LabManagementContractClient::new(&env, &contract_id);
+    let provider = setup_registered_provider(&env, &client);
+
+    let patient = Address::generate(&env);
+    let lab = Address::generate(&env);
+    let test_code = String::from_str(&env, "12345-1");
+    let value = String::from_str(&env, "9.0");
+
+    // Order is created but never assigned to any lab.
+    let order_id = client.order_lab_test(&provider, &patient, &make_req(&env));
+
+    client.flag_critical_value(&order_id, &lab, &test_code, &value);
+}
+
+/// A lab other than the one actually assigned to the order must not be able
+/// to flag a critical value for it.
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_flag_critical_value_wrong_lab_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(LabManagementContract, ());
+    let client = LabManagementContractClient::new(&env, &contract_id);
+    let provider = setup_registered_provider(&env, &client);
+
+    let patient = Address::generate(&env);
+    let lab_a = Address::generate(&env);
+    let lab_b = Address::generate(&env);
+    let test_code = String::from_str(&env, "12345-1");
+    let value = String::from_str(&env, "9.0");
+
+    let order_id = client.order_lab_test(&provider, &patient, &make_req(&env));
+    client.assign_lab(&order_id, &lab_a, &3600);
+
+    // lab_b is not the assigned lab.
+    client.flag_critical_value(&order_id, &lab_b, &test_code, &value);
+}
+
+/// Flagging a critical value against an order_id that was never created
+/// must fail rather than silently emitting an event.
+#[test]
+#[should_panic(expected = "Error(Contract, #1)")]
+fn test_flag_critical_value_nonexistent_order_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(LabManagementContract, ());
+    let client = LabManagementContractClient::new(&env, &contract_id);
 
     let lab = Address::generate(&env);
     let test_code = String::from_str(&env, "12345-1");
     let value = String::from_str(&env, "9.0");
 
-    client.flag_critical_value(&0, &lab, &test_code, &value);
+    client.flag_critical_value(&999, &lab, &test_code, &value);
+}
+
+/// The lab actually assigned to the order must be able to flag a critical
+/// value successfully.
+#[test]
+fn test_flag_critical_value_correct_lab_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(LabManagementContract, ());
+    let client = LabManagementContractClient::new(&env, &contract_id);
+    let provider = setup_registered_provider(&env, &client);
+
+    let patient = Address::generate(&env);
+    let lab = Address::generate(&env);
+    let test_code = String::from_str(&env, "12345-1");
+    let value = String::from_str(&env, "9.0");
+
+    let order_id = client.order_lab_test(&provider, &patient, &make_req(&env));
+    client.assign_lab(&order_id, &lab, &3600);
+
+    let result = client.try_flag_critical_value(&order_id, &lab, &test_code, &value);
+    assert!(result.is_ok());
 }
 
 #[test]

@@ -27,8 +27,8 @@
 //! validated. Developmental milestones enumerated with age validation.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
-    String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, vec, Address, BytesN, Env,
+    IntoVal, String, Symbol, Vec,
 };
 
 #[contracterror]
@@ -39,6 +39,7 @@ pub enum Error {
     Unauthorized = 2,
     InvalidData = 3,
     AlreadyExists = 4,
+    NotInitialized = 5,
 }
 
 #[contracttype]
@@ -199,6 +200,8 @@ pub struct GrowthPercentiles {
 
 #[contracttype]
 pub enum DataKey {
+    Admin,
+    ProviderRegistry,
     Pregnancy(u64),
     PrenatalVisit(u64),
     PrenatalScreening(u64),
@@ -218,6 +221,34 @@ pub struct MaternalChildHealthContract;
 
 #[contractimpl]
 impl MaternalChildHealthContract {
+    /// Configure the admin and the provider-registry contract used to
+    /// validate that a provider is credentialed before it may write records.
+    pub fn initialize(env: Env, admin: Address, provider_registry: Address) -> Result<(), Error> {
+        admin.require_auth();
+
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::AlreadyExists);
+        }
+
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::ProviderRegistry, &provider_registry);
+        Ok(())
+    }
+
+    /// Check whether `provider_id` is an active, credentialed provider in
+    /// the configured provider-registry contract.
+    fn is_registered_provider(env: &Env, provider_id: &Address) -> bool {
+        let provider_registry: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProviderRegistry)
+            .unwrap();
+        let args = vec![env, provider_id.clone().into_val(env)];
+        env.invoke_contract(&provider_registry, &Symbol::new(env, "is_provider"), args)
+    }
+
     pub fn create_pregnancy_record(
         env: Env,
         patient_id: Address,
@@ -229,6 +260,11 @@ impl MaternalChildHealthContract {
         prenatal_risk_factors: Vec<Symbol>,
     ) -> Result<u64, Error> {
         provider_id.require_auth();
+        patient_id.require_auth();
+
+        if !Self::is_registered_provider(&env, &provider_id) {
+            return Err(Error::Unauthorized);
+        }
 
         if lmp_date >= estimated_due_date || para > gravida {
             return Err(Error::InvalidData);
@@ -414,6 +450,14 @@ impl MaternalChildHealthContract {
             .get(&DataKey::Labor(labor_id))
             .ok_or(Error::NotFound)?;
 
+        // Proving control of an address is not proof of role -- the
+        // delivering provider must be the provider on record for this
+        // pregnancy.
+        let mut pregnancy = Self::get_pregnancy(&env, labor.pregnancy_id)?;
+        if delivering_provider != pregnancy.provider_id {
+            return Err(Error::Unauthorized);
+        }
+
         let delivery_id = Self::next_id(&env, symbol_short!("dlvry_ct"));
         let delivery = DeliveryRecord {
             delivery_id,
@@ -432,7 +476,6 @@ impl MaternalChildHealthContract {
             .persistent()
             .set(&DataKey::Delivery(delivery_id), &delivery);
 
-        let mut pregnancy = Self::get_pregnancy(&env, labor.pregnancy_id)?;
         pregnancy.outcome = Some(symbol_short!("delivrd"));
         env.storage()
             .persistent()
@@ -543,6 +586,11 @@ impl MaternalChildHealthContract {
         bmi_x100: i64,
     ) -> Result<(), Error> {
         provider_id.require_auth();
+        patient_id.require_auth();
+
+        if !Self::is_registered_provider(&env, &provider_id) {
+            return Err(Error::Unauthorized);
+        }
 
         if age_months > 228 || weight_kg_x100 <= 0 || height_cm_x100 <= 0 || bmi_x100 <= 0 {
             return Err(Error::InvalidData);
@@ -585,6 +633,11 @@ impl MaternalChildHealthContract {
         concerns: Vec<Symbol>,
     ) -> Result<(), Error> {
         provider_id.require_auth();
+        patient_id.require_auth();
+
+        if !Self::is_registered_provider(&env, &provider_id) {
+            return Err(Error::Unauthorized);
+        }
 
         if age_months > 228 {
             return Err(Error::InvalidData);
@@ -617,6 +670,11 @@ impl MaternalChildHealthContract {
         anticipatory_guidance_hash: BytesN<32>,
     ) -> Result<(), Error> {
         provider_id.require_auth();
+        patient_id.require_auth();
+
+        if !Self::is_registered_provider(&env, &provider_id) {
+            return Err(Error::Unauthorized);
+        }
 
         if age_months > 228 {
             return Err(Error::InvalidData);

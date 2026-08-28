@@ -105,7 +105,13 @@ fn test_telemedicine_lifecycle() {
         is_controlled_substance: false,
     };
     let rx_id = client.prescribe_during_visit(&visit_id, &provider_id, &patient_id, &rx_request);
-    assert_eq!(rx_id, 0);
+    assert_eq!(rx_id, 1);
+
+    // Verify prescription was persisted
+    let stored_rx = client.get_prescription(&rx_id);
+    assert_eq!(stored_rx.medication_name, rx_request.medication_name);
+    assert_eq!(stored_rx.dosage, rx_request.dosage);
+    assert_eq!(stored_rx.is_controlled_substance, rx_request.is_controlled_substance);
 
     // 6. Record documentation
     let note_hash = BytesN::from_array(&env, &[1; 32]);
@@ -427,16 +433,19 @@ fn test_prescribe_controlled_substance_blocked_by_policy() {
     let client = TelemedicineContractClient::new(&env, &contract_id);
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
+    let admin = Address::generate(&env);
+
+    // Initialize with admin
+    client.initialize(&admin).unwrap();
 
     let visit_id = setup_active_visit(&env, &client, &provider, &patient, "NY", "NY");
 
     // Set NY policy: controlled substances require in-person.
-    let admin = Address::generate(&env);
     client.set_controlled_substance_policy(
         &admin,
         &String::from_str(&env, "NY"),
         &true,
-    );
+    ).unwrap();
 
     let rx = PrescriptionRequest {
         medication_name: String::from_str(&env, "Oxycodone"),
@@ -450,4 +459,70 @@ fn test_prescribe_controlled_substance_blocked_by_policy() {
         result,
         Err(Ok(crate::types::Error::ControlledSubstanceRequiresInPerson))
     );
+}
+
+#[test]
+fn test_initialize_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    let result = client.initialize(&admin);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_set_rate_limit_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+
+    client.initialize(&admin).unwrap();
+
+    let result = client.try_set_rate_limit_config(&non_admin, &10u32, &86400u64);
+    assert_eq!(result, Err(Ok(crate::types::Error::NotAuthorized)));
+}
+
+#[test]
+fn test_set_jurisdiction_policy_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+
+    client.initialize(&admin).unwrap();
+
+    let result = client.try_set_jurisdiction_policy(
+        &non_admin,
+        &String::from_str(&env, "NY"),
+        &true,
+        &String::from_str(&env, "US-NY"),
+    );
+    assert_eq!(result, Err(Ok(crate::types::Error::NotAuthorized)));
+}
+
+#[test]
+fn test_set_controlled_substance_policy_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(TelemedicineContract, ());
+    let client = TelemedicineContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+
+    client.initialize(&admin).unwrap();
+
+    let result = client.try_set_controlled_substance_policy(
+        &non_admin,
+        &String::from_str(&env, "NY"),
+        &true,
+    );
+    assert_eq!(result, Err(Ok(crate::types::Error::NotAuthorized)));
 }

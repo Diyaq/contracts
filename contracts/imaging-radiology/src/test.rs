@@ -19,6 +19,7 @@ fn test_order_imaging_study() {
     let priority = Symbol::new(&env, "URGENT");
 
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &study_type,
@@ -51,6 +52,7 @@ fn test_multiple_imaging_orders() {
 
     // Order 1: CT Scan
     let order_id1 = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "CT"),
@@ -62,6 +64,7 @@ fn test_multiple_imaging_orders() {
 
     // Order 2: X-Ray
     let order_id2 = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "XRAY"),
@@ -92,6 +95,7 @@ fn test_schedule_imaging() {
 
     // Create order
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "MRI"),
@@ -130,6 +134,7 @@ fn test_schedule_imaging_already_scheduled() {
     env.mock_all_auths();
 
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "XRAY"),
@@ -162,6 +167,7 @@ fn test_upload_images() {
 
     // Create and schedule order
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "CT"),
@@ -211,6 +217,7 @@ fn test_upload_images_already_uploaded() {
     env.mock_all_auths();
 
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "XRAY"),
@@ -244,6 +251,7 @@ fn test_submit_preliminary_report() {
 
     // Create order and upload images
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "CT"),
@@ -285,6 +293,7 @@ fn test_submit_preliminary_report_without_images() {
     env.mock_all_auths();
 
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "MRI"),
@@ -313,6 +322,7 @@ fn test_submit_final_report() {
 
     // Create order and upload images
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "MAMMO"),
@@ -361,6 +371,7 @@ fn test_submit_final_report_already_exists() {
     env.mock_all_auths();
 
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "ULTRASOUND"),
@@ -402,6 +413,7 @@ fn test_submit_report_addendum() {
     env.mock_all_auths();
 
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "MAMMO"),
@@ -456,6 +468,7 @@ fn test_submit_report_addendum_without_final_report() {
     env.mock_all_auths();
 
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "CT"),
@@ -484,6 +497,7 @@ fn test_request_peer_review() {
 
     // Create order
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "PET"),
@@ -517,6 +531,7 @@ fn test_request_peer_review_already_exists() {
     env.mock_all_auths();
 
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "CT"),
@@ -534,6 +549,32 @@ fn test_request_peer_review_already_exists() {
 }
 
 #[test]
+fn test_request_peer_review_rejects_self_review() {
+    let env = Env::default();
+    let contract_id = env.register(ImagingRadiology, ());
+    let client = ImagingRadiologyClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let radiologist = Address::generate(&env);
+    env.mock_all_auths();
+
+    let order_id = client.order_imaging_study(
+        &provider,
+        &patient,
+        &Symbol::new(&env, "CT"),
+        &String::from_str(&env, "Chest"),
+        &true,
+        &String::from_str(&env, "Complex case"),
+        &Symbol::new(&env, "ROUTINE"),
+    );
+
+    // Self-review request should fail
+    let result = client.try_request_peer_review(&order_id, &radiologist, &radiologist);
+    assert!(result.is_err());
+}
+
+#[test]
 fn test_get_patient_orders() {
     let env = Env::default();
     let contract_id = env.register(ImagingRadiology, ());
@@ -545,6 +586,7 @@ fn test_get_patient_orders() {
 
     // Create multiple orders for same patient
     let order_id1 = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "XRAY"),
@@ -555,6 +597,7 @@ fn test_get_patient_orders() {
     );
 
     let order_id2 = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "CT"),
@@ -586,6 +629,7 @@ fn test_get_provider_orders() {
 
     // Create orders from same provider
     let order_id1 = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient1,
         &Symbol::new(&env, "MRI"),
@@ -596,6 +640,7 @@ fn test_get_provider_orders() {
     );
 
     let order_id2 = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient2,
         &Symbol::new(&env, "XRAY"),
@@ -629,6 +674,7 @@ fn test_complete_imaging_workflow() {
 
     // 1. Order imaging study
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "CT"),
@@ -714,7 +760,8 @@ fn test_multi_modality_support() {
     for i in 0..modalities.len() {
         let modality = modalities.get(i).unwrap();
         let order_id = client.order_imaging_study(
-            &provider,
+            &Address::generate(&env),
+        &provider,
             &patient,
             &modality,
             &String::from_str(&env, "Test body part"),
@@ -749,7 +796,8 @@ fn test_priority_levels() {
     for i in 0..priorities.len() {
         let priority = priorities.get(i).unwrap();
         let order_id = client.order_imaging_study(
-            &provider,
+            &Address::generate(&env),
+        &provider,
             &patient,
             &Symbol::new(&env, "XRAY"),
             &String::from_str(&env, "Chest"),
@@ -777,6 +825,7 @@ fn test_urgent_findings_notification() {
 
     // Create order with STAT priority
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "CT"),
@@ -820,6 +869,7 @@ fn test_imaging_order_creation_with_contrast() {
     env.mock_all_auths();
 
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "CT"),
@@ -848,6 +898,7 @@ fn test_imaging_schedule_timestamp_verification() {
     env.mock_all_auths();
 
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "MRI"),
@@ -881,6 +932,7 @@ fn test_multiple_preliminary_reports_error() {
     env.mock_all_auths();
 
     let order_id = client.order_imaging_study(
+        &Address::generate(&env),
         &provider,
         &patient,
         &Symbol::new(&env, "ULTRASOUND"),
@@ -927,7 +979,8 @@ fn test_patient_order_pagination_with_page_zero() {
         };
 
         client.order_imaging_study(
-            &provider,
+            &Address::generate(&env),
+        &provider,
             &patient,
             &study_type,
             &String::from_str(&env, "Test body part"),
@@ -941,4 +994,38 @@ fn test_patient_order_pagination_with_page_zero() {
     let page_result = client.get_patient_orders(&patient, &patient, &0);
     assert!(page_result.ids.len() > 0);
     assert_eq!(page_result.has_more, false);
+}
+
+// ── #755: patient consent enforcement for imaging orders ──────────────────
+
+#[test]
+fn test_order_imaging_study_requires_consent_parameter() {
+    let env = Env::default();
+    let contract_id = env.register(ImagingRadiology, ());
+    let client = ImagingRadiologyClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let access_control = Address::generate(&env);
+
+    env.mock_all_auths();
+
+    // With mock_all_auths, the cross-contract consent check passes.
+    // In production, access_control would need to have active consent granted
+    // for this call to succeed.
+    let order_id = client.order_imaging_study(
+        &access_control,
+        &provider,
+        &patient,
+        &Symbol::new(&env, "XRAY"),
+        &String::from_str(&env, "Chest"),
+        &false,
+        &String::from_str(&env, "Pneumonia rule-out"),
+        &Symbol::new(&env, "ROUTINE"),
+    );
+
+    assert!(order_id > 0);
+
+    let retrieved = client.get_imaging_order(&order_id, &provider);
+    assert!(retrieved.is_ok());
 }

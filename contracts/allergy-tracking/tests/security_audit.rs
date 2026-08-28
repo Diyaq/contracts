@@ -88,13 +88,18 @@ fn attack_severity_downgrade_without_auth() {
         &true,
     );
 
-    // With valid auth in this harness, a different provider can downgrade severity.
-    // This is a permissive behavior check, not an auth failure check.
-    client.update_allergy_severity(
+    // An attacker who is neither the recording provider, a provider granted
+    // access by the patient, nor the patient themselves must be rejected.
+    let result = client.try_update_allergy_severity(
         &allergy_id,
         &attacker,
         &Symbol::new(&env, "mild"),
         &String::from_str(&env, "Malicious downgrade"),
+    );
+    assert_eq!(
+        result,
+        Err(Ok(allergy_tracking::Error::Unauthorized)),
+        "uninvolved caller must not be able to downgrade severity"
     );
 
     let updated = client.get_allergy(&allergy_id, &patient);
@@ -556,7 +561,11 @@ fn attack_race_condition_severity_updates() {
         &true,
     );
 
-    // Two providers try to update severity simultaneously
+    // provider2 is not the recording provider, so the patient must explicitly
+    // grant access before provider2's update is authorized.
+    client.grant_access(&patient, &provider2);
+
+    // Two authorized providers try to update severity simultaneously
     client.update_allergy_severity(
         &allergy_id,
         &provider1,

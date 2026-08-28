@@ -162,6 +162,7 @@ pub enum Error {
     UnauthorizedAppointmentAction = 6,
     /// datetime must be strictly in the future for new appointments
     InvalidDatetime = 7,
+    AlreadyInitialized = 8,
 }
 
 /// Versioned event: a new appointment was scheduled.
@@ -193,8 +194,15 @@ pub struct HealthcareRegistry;
 #[contractimpl]
 impl HealthcareRegistry {
     // Set an admin/verifier during initialization
-    pub fn init(env: Env, admin: Address) {
+    pub fn init(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
+
         env.storage().instance().set(&DataKey::Admin, &admin);
+        Ok(())
     }
 
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {

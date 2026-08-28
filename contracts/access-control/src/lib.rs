@@ -746,7 +746,7 @@ impl AccessControl {
 
         for i in 0..access_list.len() {
             if let Some(permission) = access_list.get(i) {
-                if permission.resource_id == resource_id && found_grantor.is_none() {
+                if permission.resource_id == resource_id && permission.granted_by == revoker && found_grantor.is_none() {
                     // Verify revoker is either the original grantor, admin, or holds PayerReviewer role
                     let is_grantor = permission.granted_by == revoker;
                     let is_admin = revoker == admin;

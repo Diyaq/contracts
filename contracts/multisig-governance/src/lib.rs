@@ -97,7 +97,10 @@ pub struct Proposal {
     pub status: ProposalStatus,
     /// Eligible signer set snapshotted at proposal time.
     pub eligible_signers: Vec<Address>,
-    /// Domain tag for replay protection.
+    /// Domain tag for off-chain replay protection (not verified on-chain).
+    /// Derived from action_id and intended for off-chain signers to include in their
+    /// signed payloads, preventing cross-proposal replay at the application layer.
+    /// On-chain replay protection is provided by require_auth() and action_id uniqueness.
     pub domain_tag: BytesN<32>,
 }
 

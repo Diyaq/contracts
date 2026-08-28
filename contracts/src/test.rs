@@ -20,7 +20,8 @@ mod tests {
         let admin = Address::generate(env);
         let institution = Address::generate(env);
 
-        client.init(&admin);
+        env.mock_all_auths();
+        client.init(&admin).unwrap();
 
         (contract_id, client, admin, institution)
     }
@@ -157,6 +158,52 @@ mod tests {
 
         assert_eq!(stored_admin(&env, &contract_id), admin.clone());
         assert_eq!(stored_pending_admin(&env, &contract_id), None);
+    }
+
+    #[test]
+    fn test_init_requires_admin_signature() {
+        let env = Env::default();
+        let contract_id = env.register(HealthcareRegistry, ());
+        let client = HealthcareRegistryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &attacker,
+                invoke: &MockAuthInvoke {
+                    contract: &contract_id,
+                    fn_name: "init",
+                    args: (&admin,).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_init(&admin);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_init_prevents_reinitialize() {
+        let env = Env::default();
+        let (contract_id, client, admin, _) = setup_registry_test(&env);
+
+        let new_admin = Address::generate(&env);
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &new_admin,
+                invoke: &MockAuthInvoke {
+                    contract: &contract_id,
+                    fn_name: "init",
+                    args: (&new_admin,).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_init(&new_admin);
+
+        assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
+        assert_eq!(stored_admin(&env, &contract_id), admin);
     }
 
     #[test]
