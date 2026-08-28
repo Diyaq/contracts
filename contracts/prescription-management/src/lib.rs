@@ -748,7 +748,7 @@ impl PrescriptionContract {
             .ok_or(Error::NotFound)?;
 
         // Validate transfer reason
-        if req.transfer_reason.is_empty() {
+        if is_blank(&req.transfer_reason) {
             return Err(Error::MissingTransferReason);
         }
 
@@ -1480,7 +1480,7 @@ impl PrescriptionContract {
     ) -> Result<u64, Error> {
         provider_id.require_auth();
 
-        if recall_reason == String::from_str(&env, "") {
+        if is_blank(&recall_reason) {
             return Err(Error::MissingRecallReason);
         }
 

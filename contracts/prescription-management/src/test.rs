@@ -831,3 +831,98 @@ fn test_transfer_one_second_before_midnight_is_valid() {
     };
     client.transfer_prescription(&req, &pharmacy); // must not panic
 }
+
+// ── #782: Whitespace-only reason validation ────────────────────────────────
+
+#[test]
+fn test_recall_prescription_rejects_whitespace_only_reason() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, provider, patient, pharmacy) = make_client(&env);
+
+    let req = IssueRequest {
+        medication_name: String::from_str(&env, "TestDrug"),
+        ndc_code: String::from_str(&env, "00000-0002"),
+        dosage: String::from_str(&env, "10mg"),
+        quantity: 10,
+        days_supply: 30,
+        refills_allowed: 0,
+        instructions_hash: BytesN::from_array(&env, &[0u8; 32]),
+        is_controlled: false,
+        schedule: None,
+        valid_until: 1_704_153_600,
+        substitution_allowed: true,
+        pharmacy_id: Some(pharmacy.clone()),
+        bypass_allergy_check: false,
+        dea_number: None,
+        bypass_reason_hash: None,
+    };
+    let prescription_id = client.issue_prescription(&provider, &patient, &req);
+
+    // Test that whitespace-only reason is rejected
+    let result = client.try_recall_prescription(
+        &prescription_id,
+        &provider,
+        &String::from_str(&env, "   "), // single space
+        &String::from_str(&env, "no clinical justification"),
+    );
+    assert_eq!(result, Err(Ok(Error::MissingRecallReason)));
+
+    // Test that valid reason works
+    let recall_id = client.recall_prescription(
+        &prescription_id,
+        &provider,
+        &String::from_str(&env, "Valid recall reason"),
+        &String::from_str(&env, "no clinical justification"),
+    );
+    assert!(recall_id > 0);
+}
+
+#[test]
+fn test_transfer_prescription_rejects_whitespace_only_reason() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, provider, patient, pharmacy) = make_client(&env);
+
+    let req = IssueRequest {
+        medication_name: String::from_str(&env, "TestDrug"),
+        ndc_code: String::from_str(&env, "00000-0003"),
+        dosage: String::from_str(&env, "10mg"),
+        quantity: 10,
+        days_supply: 30,
+        refills_allowed: 0,
+        instructions_hash: BytesN::from_array(&env, &[0u8; 32]),
+        is_controlled: false,
+        schedule: None,
+        valid_until: 1_704_153_600,
+        substitution_allowed: true,
+        pharmacy_id: Some(pharmacy.clone()),
+        bypass_allergy_check: false,
+        dea_number: None,
+        bypass_reason_hash: None,
+    };
+    let prescription_id = client.issue_prescription(&provider, &patient, &req);
+
+    // Test that whitespace-only reason is rejected
+    let result = client.try_transfer_prescription(
+        &TransferRequest {
+            prescription_id,
+            to_pharmacy: Address::generate(&env),
+            transfer_reason: String::from_str(&env, "\t\n\r"), // mixed whitespace
+            urgency: Symbol::new(&env, "routine"),
+        },
+        &pharmacy,
+    );
+    assert_eq!(result, Err(Ok(Error::MissingTransferReason)));
+
+    // Test that valid reason works
+    client.transfer_prescription(
+        &TransferRequest {
+            prescription_id,
+            to_pharmacy: Address::generate(&env),
+            transfer_reason: String::from_str(&env, "Valid transfer reason"),
+            urgency: Symbol::new(&env, "routine"),
+        },
+        &pharmacy,
+    );
+}
