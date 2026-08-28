@@ -47,6 +47,8 @@ pub struct DoctorProfileData {
     pub specialization: String,
     pub institution_wallet: Address,
     pub metadata: String,
+    pub active: bool,
+    pub revoked_at: Option<u64>,
 }
 
 /// --------------------
@@ -107,6 +109,8 @@ impl DoctorRegistry {
             specialization,
             institution_wallet,
             metadata: String::from_str(&env, ""),
+            active: true,
+            revoked_at: None,
         };
 
         env.storage().persistent().set(&key, &doctor_profile);
@@ -160,6 +164,86 @@ impl DoctorRegistry {
             .persistent()
             .get(&key)
             .ok_or(Error::ProfileNotFound)
+    }
+
+    /// Deactivate a doctor profile.
+    /// Requires the admin (registrar) to authorize.
+    ///
+    /// # Arguments
+    /// * `registrar` - The admin address that authorizes this deactivation
+    /// * `wallet` - The wallet address of the doctor whose profile is being deactivated
+    pub fn deactivate_doctor_profile(
+        env: Env,
+        registrar: Address,
+        wallet: Address,
+    ) -> Result<(), Error> {
+        validate_nonzero_address(&registrar).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
+        require_admin(&env, &registrar)?;
+
+        let key = DataKey::Doctor(wallet.clone());
+        let mut doctor_profile: DoctorProfileData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::ProfileNotFound)?;
+
+        doctor_profile.active = false;
+        doctor_profile.revoked_at = Some(env.ledger().timestamp());
+        env.storage().persistent().set(&key, &doctor_profile);
+
+        env.events()
+            .publish((symbol_short!("deact_doc"), wallet), symbol_short!("success"));
+
+        Ok(())
+    }
+
+    /// Reactivate a previously deactivated doctor profile.
+    /// Requires the admin (registrar) to authorize.
+    ///
+    /// # Arguments
+    /// * `registrar` - The admin address that authorizes this reactivation
+    /// * `wallet` - The wallet address of the doctor whose profile is being reactivated
+    pub fn reactivate_doctor_profile(
+        env: Env,
+        registrar: Address,
+        wallet: Address,
+    ) -> Result<(), Error> {
+        validate_nonzero_address(&registrar).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&wallet).map_err(|_| Error::InvalidAddress)?;
+        require_admin(&env, &registrar)?;
+
+        let key = DataKey::Doctor(wallet.clone());
+        let mut doctor_profile: DoctorProfileData = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::ProfileNotFound)?;
+
+        doctor_profile.active = true;
+        doctor_profile.revoked_at = None;
+        env.storage().persistent().set(&key, &doctor_profile);
+
+        env.events()
+            .publish((symbol_short!("react_doc"), wallet), symbol_short!("success"));
+
+        Ok(())
+    }
+
+    /// Check if a doctor is registered and active.
+    ///
+    /// # Arguments
+    /// * `wallet` - The wallet address of the doctor
+    pub fn is_active(env: Env, wallet: Address) -> bool {
+        if validate_nonzero_address(&wallet).is_err() {
+            return false;
+        }
+        let key = DataKey::Doctor(wallet);
+        if let Some(profile) = env.storage().persistent().get::<DataKey, DoctorProfileData>(&key) {
+            profile.active
+        } else {
+            false
+        }
     }
 }
 

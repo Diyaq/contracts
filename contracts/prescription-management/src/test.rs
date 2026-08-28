@@ -326,7 +326,8 @@ fn test_drug_allergy_and_contraindications() {
 
     client.set_patient_allergies(&patient, &vec![&env, String::from_str(&env, "Penicillin")]);
 
-    let allergy = client.check_allergy_interaction(&patient, &med);
+    // The patient querying their own allergies is always authorized.
+    let allergy = client.check_allergy_interaction(&patient, &patient, &med);
     assert_eq!(allergy.len(), 1);
     let warning = allergy.get(0).unwrap();
     assert_eq!(warning.severity, Symbol::new(&env, "contraindicated"));
@@ -345,11 +346,137 @@ fn test_drug_allergy_and_contraindications() {
 
     let found = client.get_contraindications(
         &patient,
+        &patient,
         &med,
         &vec![&env, String::from_str(&env, "renal_failure")],
     );
 
     assert_eq!(found.len(), 2);
+}
+
+// ── #737: PHI-leak fix — check_allergy_interaction / get_contraindications ──
+//
+// Neither function previously checked who was asking, so anyone who knew a
+// patient's address could probe their allergies/conditions for any
+// medication. Both now require `requester.require_auth()` and authorize only
+// the patient themself or a caller registered in the provider-registry. This
+// contract has no separate consent mechanism, so an unconfigured registry
+// fails closed (only the patient may call) — see `require_phi_access` in
+// lib.rs.
+
+#[test]
+fn test_check_allergy_interaction_rejects_unauthorized_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PrescriptionContract, ());
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let outsider = Address::generate(&env);
+    let med = String::from_str(&env, "44444-2000");
+
+    client.register_medication(
+        &med,
+        &String::from_str(&env, "Penicillin"),
+        &vec![&env, String::from_str(&env, "Pen-V")],
+        &Symbol::new(&env, "abx"),
+        &BytesN::from_array(&env, &[4u8; 32]),
+    );
+    client.set_patient_allergies(&patient, &vec![&env, String::from_str(&env, "Penicillin")]);
+
+    // `outsider` is neither the patient nor a registered provider (no
+    // provider-registry is even configured), so this must fail closed.
+    let result = client.try_check_allergy_interaction(&outsider, &patient, &med);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_check_allergy_interaction_allows_patient_self_query() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PrescriptionContract, ());
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let med = String::from_str(&env, "44444-2001");
+
+    client.register_medication(
+        &med,
+        &String::from_str(&env, "Penicillin"),
+        &vec![&env, String::from_str(&env, "Pen-V")],
+        &Symbol::new(&env, "abx"),
+        &BytesN::from_array(&env, &[4u8; 32]),
+    );
+    client.set_patient_allergies(&patient, &vec![&env, String::from_str(&env, "Penicillin")]);
+
+    // patient == requester is always allowed — no provider-registry involved.
+    let warnings = client.check_allergy_interaction(&patient, &patient, &med);
+    assert_eq!(warnings.len(), 1);
+}
+
+#[test]
+fn test_get_contraindications_rejects_unauthorized_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PrescriptionContract, ());
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let outsider = Address::generate(&env);
+    let med = String::from_str(&env, "44444-2002");
+
+    client.register_medication(
+        &med,
+        &String::from_str(&env, "Penicillin"),
+        &vec![&env, String::from_str(&env, "Pen-V")],
+        &Symbol::new(&env, "abx"),
+        &BytesN::from_array(&env, &[4u8; 32]),
+    );
+    client.set_patient_conditions(&patient, &vec![&env, String::from_str(&env, "pregnancy")]);
+    client.set_medication_contraindications(
+        &med,
+        &vec![&env, String::from_str(&env, "pregnancy")],
+    );
+
+    let result = client.try_get_contraindications(
+        &outsider,
+        &patient,
+        &med,
+        &vec![&env],
+    );
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_get_contraindications_allows_patient_self_query() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PrescriptionContract, ());
+    let client = PrescriptionContractClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let med = String::from_str(&env, "44444-2003");
+
+    client.register_medication(
+        &med,
+        &String::from_str(&env, "Penicillin"),
+        &vec![&env, String::from_str(&env, "Pen-V")],
+        &Symbol::new(&env, "abx"),
+        &BytesN::from_array(&env, &[4u8; 32]),
+    );
+    client.set_patient_conditions(&patient, &vec![&env, String::from_str(&env, "pregnancy")]);
+    client.set_medication_contraindications(
+        &med,
+        &vec![&env, String::from_str(&env, "pregnancy")],
+    );
+
+    // patient == requester is always allowed — no provider-registry involved.
+    let found = client.get_contraindications(&patient, &patient, &med, &vec![&env]);
+    assert_eq!(found.len(), 1);
 }
 
 #[test]
@@ -703,4 +830,99 @@ fn test_transfer_one_second_before_midnight_is_valid() {
         urgency: Symbol::new(&env, "routine"),
     };
     client.transfer_prescription(&req, &pharmacy); // must not panic
+}
+
+// ── #782: Whitespace-only reason validation ────────────────────────────────
+
+#[test]
+fn test_recall_prescription_rejects_whitespace_only_reason() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, provider, patient, pharmacy) = make_client(&env);
+
+    let req = IssueRequest {
+        medication_name: String::from_str(&env, "TestDrug"),
+        ndc_code: String::from_str(&env, "00000-0002"),
+        dosage: String::from_str(&env, "10mg"),
+        quantity: 10,
+        days_supply: 30,
+        refills_allowed: 0,
+        instructions_hash: BytesN::from_array(&env, &[0u8; 32]),
+        is_controlled: false,
+        schedule: None,
+        valid_until: 1_704_153_600,
+        substitution_allowed: true,
+        pharmacy_id: Some(pharmacy.clone()),
+        bypass_allergy_check: false,
+        dea_number: None,
+        bypass_reason_hash: None,
+    };
+    let prescription_id = client.issue_prescription(&provider, &patient, &req);
+
+    // Test that whitespace-only reason is rejected
+    let result = client.try_recall_prescription(
+        &prescription_id,
+        &provider,
+        &String::from_str(&env, "   "), // single space
+        &String::from_str(&env, "no clinical justification"),
+    );
+    assert_eq!(result, Err(Ok(Error::MissingRecallReason)));
+
+    // Test that valid reason works
+    let recall_id = client.recall_prescription(
+        &prescription_id,
+        &provider,
+        &String::from_str(&env, "Valid recall reason"),
+        &String::from_str(&env, "no clinical justification"),
+    );
+    assert!(recall_id > 0);
+}
+
+#[test]
+fn test_transfer_prescription_rejects_whitespace_only_reason() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, provider, patient, pharmacy) = make_client(&env);
+
+    let req = IssueRequest {
+        medication_name: String::from_str(&env, "TestDrug"),
+        ndc_code: String::from_str(&env, "00000-0003"),
+        dosage: String::from_str(&env, "10mg"),
+        quantity: 10,
+        days_supply: 30,
+        refills_allowed: 0,
+        instructions_hash: BytesN::from_array(&env, &[0u8; 32]),
+        is_controlled: false,
+        schedule: None,
+        valid_until: 1_704_153_600,
+        substitution_allowed: true,
+        pharmacy_id: Some(pharmacy.clone()),
+        bypass_allergy_check: false,
+        dea_number: None,
+        bypass_reason_hash: None,
+    };
+    let prescription_id = client.issue_prescription(&provider, &patient, &req);
+
+    // Test that whitespace-only reason is rejected
+    let result = client.try_transfer_prescription(
+        &TransferRequest {
+            prescription_id,
+            to_pharmacy: Address::generate(&env),
+            transfer_reason: String::from_str(&env, "\t\n\r"), // mixed whitespace
+            urgency: Symbol::new(&env, "routine"),
+        },
+        &pharmacy,
+    );
+    assert_eq!(result, Err(Ok(Error::MissingTransferReason)));
+
+    // Test that valid reason works
+    client.transfer_prescription(
+        &TransferRequest {
+            prescription_id,
+            to_pharmacy: Address::generate(&env),
+            transfer_reason: String::from_str(&env, "Valid transfer reason"),
+            urgency: Symbol::new(&env, "routine"),
+        },
+        &pharmacy,
+    );
 }

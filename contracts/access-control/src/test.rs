@@ -1075,3 +1075,42 @@ fn test_emergency_access_emits_event() {
     let events = env.events().all();
     assert!(events.len() >= 1, "at least one event must have been emitted");
 }
+
+// -----------------------------------------------------------------------
+// #733: revoke_access matching on (resource_id, granted_by)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_revoke_access_multiple_grantors_same_resource() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    let grantor1 = Address::generate(&env);
+    let grantor2 = Address::generate(&env);
+    let grantee = Address::generate(&env);
+
+    client.register_entity(&admin, &String::from_str(&env, "Admin"));
+    client.register_entity(&grantor1, &String::from_str(&env, "Grantor1"));
+    client.register_entity(&grantor2, &String::from_str(&env, "Grantor2"));
+    client.register_entity(&grantee, &String::from_str(&env, "Grantee"));
+
+    let resource_id = String::from_str(&env, "shared-resource");
+
+    // Both grantor1 and grantor2 grant the same (grantee, resource) pair
+    client.grant_access(&grantor1, &grantee, &resource_id, &0, &None);
+    client.grant_access(&grantor2, &grantee, &resource_id, &0, &None);
+
+    // Verify grantee has access (should be granted by both)
+    assert!(client.check_access(&grantee, &resource_id));
+
+    // Grantor2 revokes their own grant
+    client.revoke_access(&grantor2, &grantee, &resource_id);
+
+    // Grantee should still have access because grantor1's grant remains
+    assert!(client.check_access(&grantee, &resource_id));
+
+    // Grantor1 revokes their grant
+    client.revoke_access(&grantor1, &grantee, &resource_id);
+
+    // Now grantee has no access
+    assert!(!client.check_access(&grantee, &resource_id));
+}

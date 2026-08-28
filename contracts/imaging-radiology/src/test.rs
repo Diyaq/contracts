@@ -549,6 +549,32 @@ fn test_request_peer_review_already_exists() {
 }
 
 #[test]
+fn test_request_peer_review_rejects_self_review() {
+    let env = Env::default();
+    let contract_id = env.register(ImagingRadiology, ());
+    let client = ImagingRadiologyClient::new(&env, &contract_id);
+
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let radiologist = Address::generate(&env);
+    env.mock_all_auths();
+
+    let order_id = client.order_imaging_study(
+        &provider,
+        &patient,
+        &Symbol::new(&env, "CT"),
+        &String::from_str(&env, "Chest"),
+        &true,
+        &String::from_str(&env, "Complex case"),
+        &Symbol::new(&env, "ROUTINE"),
+    );
+
+    // Self-review request should fail
+    let result = client.try_request_peer_review(&order_id, &radiologist, &radiologist);
+    assert!(result.is_err());
+}
+
+#[test]
 fn test_get_patient_orders() {
     let env = Env::default();
     let contract_id = env.register(ImagingRadiology, ());

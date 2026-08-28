@@ -748,7 +748,7 @@ impl PrescriptionContract {
             .ok_or(Error::NotFound)?;
 
         // Validate transfer reason
-        if req.transfer_reason.is_empty() {
+        if is_blank(&req.transfer_reason) {
             return Err(Error::MissingTransferReason);
         }
 
@@ -1149,11 +1149,18 @@ impl PrescriptionContract {
         Ok(warnings)
     }
 
+    /// #737: PHI read — reveals whether `patient_id` has an allergy to `medication`.
+    /// Requires `requester` to authenticate, and to be either the patient themself
+    /// or a caller registered in the provider-registry (see `require_phi_access`).
     pub fn check_allergy_interaction(
         env: Env,
+        requester: Address,
         patient_id: Address,
         medication: String,
     ) -> Result<Vec<InteractionWarning>, Error> {
+        requester.require_auth();
+        require_phi_access(&env, &requester, &patient_id)?;
+
         let med: Medication = env
             .storage()
             .persistent()
@@ -1191,12 +1198,20 @@ impl PrescriptionContract {
         Ok(warnings)
     }
 
+    /// #737: PHI read — reveals whether `patient_id` has a condition contraindicated
+    /// with `medication`. Requires `requester` to authenticate, and to be either the
+    /// patient themself or a caller registered in the provider-registry (see
+    /// `require_phi_access`).
     pub fn get_contraindications(
         env: Env,
+        requester: Address,
         patient_id: Address,
         medication: String,
         conditions: Vec<String>,
     ) -> Result<Vec<String>, Error> {
+        requester.require_auth();
+        require_phi_access(&env, &requester, &patient_id)?;
+
         if !env
             .storage()
             .persistent()
@@ -1465,7 +1480,7 @@ impl PrescriptionContract {
     ) -> Result<u64, Error> {
         provider_id.require_auth();
 
-        if recall_reason == String::from_str(&env, "") {
+        if is_blank(&recall_reason) {
             return Err(Error::MissingRecallReason);
         }
 
@@ -1774,6 +1789,39 @@ fn do_issue_prescription(
     );
 
     Ok(rx_id)
+}
+
+/// Authorization gate for PHI reads that expose patient allergy/condition data
+/// (`check_allergy_interaction`, `get_contraindications` — see #737). This
+/// contract has no separate consent-grant/access-control mechanism (unlike the
+/// sibling `allergy-tracking` contract's `AccessControl` map), so a caller is
+/// authorized only if they *are* the patient, or if they are registered in the
+/// configured provider-registry — the only gating primitive this contract has,
+/// mirroring the check `do_issue_prescription` already performs for
+/// `issue_prescription`.
+///
+/// Unlike `do_issue_prescription` (which treats an unconfigured registry as
+/// "skip the check"), this fails *closed*: if no provider-registry is
+/// configured, only the patient themself may read their own PHI. That's
+/// intentional — this gate exists specifically to close a PHI leak, so an
+/// unconfigured registry must not silently reopen it.
+fn require_phi_access(env: &Env, requester: &Address, patient_id: &Address) -> Result<(), Error> {
+    if requester == patient_id {
+        return Ok(());
+    }
+
+    if let Some(registry_addr) = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&DataKey::ProviderRegistry)
+    {
+        let client = ProviderRegistryClient::new(env, &registry_addr);
+        if client.is_provider(requester) {
+            return Ok(());
+        }
+    }
+
+    Err(Error::Unauthorized)
 }
 
 fn is_registry_governed(env: &Env) -> bool {

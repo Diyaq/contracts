@@ -1,22 +1,63 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, vec, Address, BytesN, Env, String, Symbol};
+use provider_registry::{ProviderRegistry, ProviderRegistryClient};
+use soroban_sdk::{
+    testutils::{Address as _, MockAuth, MockAuthInvoke},
+    vec, Address, BytesN, Env, IntoVal, String, Symbol,
+};
 
-fn setup() -> (Env, MaternalChildHealthContractClient<'static>) {
+fn register_test_provider(
+    env: &Env,
+    registry: &ProviderRegistryClient<'static>,
+    admin: &Address,
+    provider: &Address,
+) {
+    let issuer = Address::generate(env);
+    registry.register_provider(
+        admin,
+        provider,
+        &String::from_str(env, "Dr. Provider"),
+        &String::from_str(env, "General"),
+        &String::from_str(env, "LIC-001"),
+        &BytesN::from_array(env, &[1u8; 32]),
+        &issuer,
+        &BytesN::from_array(env, &[2u8; 32]),
+        &u64::MAX,
+        &BytesN::from_array(env, &[3u8; 32]),
+    );
+}
+
+fn setup() -> (
+    Env,
+    MaternalChildHealthContractClient<'static>,
+    ProviderRegistryClient<'static>,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let registry_id = env.register(ProviderRegistry, ());
+    let registry = ProviderRegistryClient::new(&env, &registry_id);
+    registry.initialize(&admin);
+
     let contract_id = env.register(MaternalChildHealthContract, ());
     let client = MaternalChildHealthContractClient::new(&env, &contract_id);
-    (env, client)
+    client.initialize(&admin, &registry_id);
+
+    (env, client, registry, admin)
 }
 
 fn seed_pregnancy(
     env: &Env,
     client: &MaternalChildHealthContractClient<'static>,
+    registry: &ProviderRegistryClient<'static>,
+    admin: &Address,
 ) -> (Address, Address, u64) {
     let patient = Address::generate(env);
     let provider = Address::generate(env);
+    register_test_provider(env, registry, admin, &provider);
     let pregnancy_id = client.create_pregnancy_record(
         &patient,
         &provider,
@@ -31,8 +72,8 @@ fn seed_pregnancy(
 
 #[test]
 fn test_create_pregnancy_record() {
-    let (env, client) = setup();
-    let (patient, provider, id) = seed_pregnancy(&env, &client);
+    let (env, client, registry, admin) = setup();
+    let (patient, provider, id) = seed_pregnancy(&env, &client, &registry, &admin);
 
     assert_eq!(id, 1);
     let record = client.get_pregnancy_record(&id);
@@ -44,9 +85,10 @@ fn test_create_pregnancy_record() {
 
 #[test]
 fn test_create_pregnancy_invalid_dates_fails() {
-    let (env, client) = setup();
+    let (env, client, registry, admin) = setup();
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
+    register_test_provider(&env, &registry, &admin, &provider);
 
     let res = client.try_create_pregnancy_record(
         &patient,
@@ -61,9 +103,73 @@ fn test_create_pregnancy_invalid_dates_fails() {
 }
 
 #[test]
+fn test_create_pregnancy_record_rejects_unconsented_patient() {
+    let (env, client, registry, admin) = setup();
+    let patient = Address::generate(&env);
+    let provider = Address::generate(&env);
+    register_test_provider(&env, &registry, &admin, &provider);
+
+    let gravida = 2u32;
+    let para = 1u32;
+    let risk_factors = vec![&env, Symbol::new(&env, "diabetes")];
+
+    // Only the provider signs; the patient never authorized this record.
+    let result = client
+        .mock_auths(&[MockAuth {
+            address: &provider,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "create_pregnancy_record",
+                args: (
+                    &patient,
+                    &provider,
+                    1_700_000_000u64,
+                    1_725_000_000u64,
+                    gravida,
+                    para,
+                    &risk_factors,
+                )
+                    .into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .try_create_pregnancy_record(
+            &patient,
+            &provider,
+            &1_700_000_000,
+            &1_725_000_000,
+            &gravida,
+            &para,
+            &risk_factors,
+        );
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_create_pregnancy_record_rejects_unregistered_provider() {
+    let (env, client, _registry, _admin) = setup();
+    let patient = Address::generate(&env);
+    // Never registered in the provider-registry.
+    let unregistered_provider = Address::generate(&env);
+
+    let result = client.try_create_pregnancy_record(
+        &patient,
+        &unregistered_provider,
+        &1_700_000_000,
+        &1_725_000_000,
+        &2,
+        &1,
+        &vec![&env, Symbol::new(&env, "diabetes")],
+    );
+
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
 fn test_prenatal_visit_screening_and_ultrasound() {
-    let (env, client) = setup();
-    let (_patient, _provider, pregnancy_id) = seed_pregnancy(&env, &client);
+    let (env, client, registry, admin) = setup();
+    let (_patient, _provider, pregnancy_id) = seed_pregnancy(&env, &client, &registry, &admin);
 
     client.record_prenatal_visit(
         &pregnancy_id,
@@ -107,8 +213,8 @@ fn test_prenatal_visit_screening_and_ultrasound() {
 
 #[test]
 fn test_labor_delivery_and_newborn_flow() {
-    let (env, client) = setup();
-    let (_patient, provider, pregnancy_id) = seed_pregnancy(&env, &client);
+    let (env, client, registry, admin) = setup();
+    let (_patient, provider, pregnancy_id) = seed_pregnancy(&env, &client, &registry, &admin);
 
     let labor_id = client.document_labor_admission(
         &pregnancy_id,
@@ -168,8 +274,40 @@ fn test_labor_delivery_and_newborn_flow() {
 }
 
 #[test]
+fn test_record_delivery_rejects_provider_not_on_pregnancy() {
+    let (env, client, registry, admin) = setup();
+    let (_patient, _provider, pregnancy_id) = seed_pregnancy(&env, &client, &registry, &admin);
+
+    // A different, otherwise-registered provider who was never assigned to
+    // this pregnancy tries to record the delivery.
+    let outsider_provider = Address::generate(&env);
+    register_test_provider(&env, &registry, &admin, &outsider_provider);
+
+    let labor_id = client.document_labor_admission(
+        &pregnancy_id,
+        &1_724_900_000,
+        &true,
+        &Symbol::new(&env, "intact"),
+        &6,
+        &90,
+    );
+
+    let res = client.try_record_delivery(
+        &labor_id,
+        &1_725_000_000,
+        &Symbol::new(&env, "vaginal"),
+        &Symbol::new(&env, "vertex"),
+        &vec![&env, Symbol::new(&env, "none")],
+        &350,
+        &outsider_provider,
+    );
+
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
 fn test_newborn_screening_and_missing_newborn() {
-    let (env, client) = setup();
+    let (env, client, _registry, _admin) = setup();
     let provider = Address::generate(&env);
     let missing = Address::generate(&env);
     let res = client.try_record_newborn_screening(
@@ -185,8 +323,8 @@ fn test_newborn_screening_and_missing_newborn() {
 
 #[test]
 fn test_newborn_screening_success() {
-    let (env, client) = setup();
-    let (_patient, provider, pregnancy_id) = seed_pregnancy(&env, &client);
+    let (env, client, registry, admin) = setup();
+    let (_patient, provider, pregnancy_id) = seed_pregnancy(&env, &client, &registry, &admin);
 
     let labor_id = client.document_labor_admission(
         &pregnancy_id,
@@ -230,9 +368,10 @@ fn test_newborn_screening_success() {
 
 #[test]
 fn test_pediatric_growth_milestones_well_child() {
-    let (env, client) = setup();
+    let (env, client, registry, admin) = setup();
     let patient = Address::generate(&env);
     let provider = Address::generate(&env);
+    register_test_provider(&env, &registry, &admin, &provider);
 
     client.track_pediatric_growth(
         &provider,
@@ -271,8 +410,8 @@ fn test_pediatric_growth_milestones_well_child() {
 
 #[test]
 fn test_invalid_inputs_failures() {
-    let (env, client) = setup();
-    let (_patient, provider, pregnancy_id) = seed_pregnancy(&env, &client);
+    let (env, client, registry, admin) = setup();
+    let (_patient, provider, pregnancy_id) = seed_pregnancy(&env, &client, &registry, &admin);
 
     let bad_labor = client.try_document_labor_admission(
         &pregnancy_id,
@@ -331,7 +470,7 @@ fn test_invalid_inputs_failures() {
 
 #[test]
 fn test_calculate_growth_percentiles() {
-    let (env, client) = setup();
+    let (env, client, _registry, _admin) = setup();
     let patient = Address::generate(&env);
 
     let percentiles = client.calculate_growth_percentiles(
@@ -366,11 +505,8 @@ fn test_calculate_growth_percentiles() {
 #[test]
 #[should_panic]
 fn test_prenatal_visit_requires_provider_auth() {
-    let env = Env::default();
-    let contract_id = env.register(MaternalChildHealthContract, ());
-    let client = MaternalChildHealthContractClient::new(&env, &contract_id);
-    env.mock_all_auths();
-    let (_patient, _provider, pregnancy_id) = seed_pregnancy(&env, &client);
+    let (env, client, registry, admin) = setup();
+    let (_patient, _provider, pregnancy_id) = seed_pregnancy(&env, &client, &registry, &admin);
 
     env.set_auths(&[]);
     client.record_prenatal_visit(
@@ -388,11 +524,8 @@ fn test_prenatal_visit_requires_provider_auth() {
 #[test]
 #[should_panic]
 fn test_document_labor_admission_requires_provider_auth() {
-    let env = Env::default();
-    let contract_id = env.register(MaternalChildHealthContract, ());
-    let client = MaternalChildHealthContractClient::new(&env, &contract_id);
-    env.mock_all_auths();
-    let (_patient, _provider, pregnancy_id) = seed_pregnancy(&env, &client);
+    let (env, client, registry, admin) = setup();
+    let (_patient, _provider, pregnancy_id) = seed_pregnancy(&env, &client, &registry, &admin);
 
     env.set_auths(&[]);
     client.document_labor_admission(
@@ -407,8 +540,8 @@ fn test_document_labor_admission_requires_provider_auth() {
 
 #[test]
 fn test_record_newborn_rejects_mismatched_provider() {
-    let (env, client) = setup();
-    let (_patient, provider, pregnancy_id) = seed_pregnancy(&env, &client);
+    let (env, client, registry, admin) = setup();
+    let (_patient, provider, pregnancy_id) = seed_pregnancy(&env, &client, &registry, &admin);
     let impostor = Address::generate(&env);
 
     let labor_id = client.document_labor_admission(
@@ -467,7 +600,7 @@ fn test_track_pediatric_growth_requires_provider_auth() {
 
 #[test]
 fn test_nonexistent_getters_fail() {
-    let (env, client) = setup();
+    let (env, client, _registry, _admin) = setup();
     let res1 = client.try_get_pregnancy_record(&999);
     let res_labor = client.try_get_labor_record(&999);
     let res2 = client.try_get_delivery_record(&999);

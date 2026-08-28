@@ -290,7 +290,7 @@ impl ClinicalTrialContract {
 
         let mut met_inclusion = Vec::new(&env);
         let mut met_exclusion = Vec::new(&env);
-        let disqualifying_factors = Vec::new(&env);
+        let mut disqualifying_factors = Vec::new(&env);
         let mut evaluation_artifacts = Vec::new(&env);
 
         for rule in criteria.inclusion_criteria.iter() {
@@ -315,6 +315,21 @@ impl ClinicalTrialContract {
             );
             met_exclusion.push_back(matched);
             evaluation_artifacts.push_back(artifact);
+        }
+
+        // Populate disqualifying_factors from failed inclusion and matched exclusion rules
+        for (i, artifact) in evaluation_artifacts.iter().enumerate() {
+            if i < criteria.inclusion_criteria.len() {
+                // Inclusion rule
+                if !artifact.passed {
+                    disqualifying_factors.push_back(artifact.explanation.clone());
+                }
+            } else {
+                // Exclusion rule
+                if artifact.passed {
+                    disqualifying_factors.push_back(artifact.explanation.clone());
+                }
+            }
         }
 
         let eligible = met_inclusion.iter().all(|x| x) && met_exclusion.iter().all(|x| !x);

@@ -910,3 +910,134 @@ fn test_track_device_performance_patient_mismatch() {
     // Should fail with NotAuthorized error
     assert!(result.is_err());
 }
+
+#[test]
+#[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
+fn test_schedule_next_maintenance_requires_auth() {
+    let env = Env::default();
+    // env.mock_all_auths() is NOT called, so auth will fail
+    let contract_id = env.register(MedicalDeviceRegistry, ());
+    let client = MedicalDeviceRegistryClient::new(&env, &contract_id);
+
+    let manufacturer = Address::generate(&env);
+
+    client.schedule_next_maintenance(&1u64, &1710000000u64, &manufacturer);
+}
+
+#[test]
+fn test_schedule_next_maintenance_rejects_unauthorized_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = setup_client(&env);
+
+    let manufacturer = Address::generate(&env);
+    let stranger = Address::generate(&env);
+
+    let device_id = client.register_device(
+        &manufacturer,
+        &String::from_str(&env, "UDI-55555-DME"),
+        &Symbol::new(&env, "DME"),
+        &String::from_str(&env, "MedCorp"),
+        &String::from_str(&env, "MC-200"),
+        &String::from_str(&env, "LOT-002"),
+        &1690000000u64,
+        &None,
+        &dummy_hash(&env),
+        &DeviceExtras {
+            warranty_expiration_date: None,
+            maintenance_interval_days: Some(90u64),
+        },
+    );
+
+    // A caller who is neither the manufacturer nor a technician with an
+    // existing maintenance-history entry for this device must not be able
+    // to rewrite the maintenance schedule.
+    let res = client.try_schedule_next_maintenance(&device_id, &1710000000u64, &stranger);
+    assert_eq!(res.unwrap_err().unwrap(), Error::NotAuthorized);
+}
+
+#[test]
+fn test_schedule_next_maintenance_allows_manufacturer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = setup_client(&env);
+
+    let manufacturer = Address::generate(&env);
+
+    let device_id = client.register_device(
+        &manufacturer,
+        &String::from_str(&env, "UDI-66666-DME"),
+        &Symbol::new(&env, "DME"),
+        &String::from_str(&env, "MedCorp"),
+        &String::from_str(&env, "MC-300"),
+        &String::from_str(&env, "LOT-003"),
+        &1690000000u64,
+        &None,
+        &dummy_hash(&env),
+        &DeviceExtras {
+            warranty_expiration_date: None,
+            maintenance_interval_days: Some(90u64),
+        },
+    );
+
+    let completed_date = 1710000000u64;
+    client.schedule_next_maintenance(&device_id, &completed_date, &manufacturer);
+
+    assert!(client.check_maintenance_due(&device_id, &(completed_date + 90 * 86400)));
+    assert!(!client.check_maintenance_due(&device_id, &(completed_date + 86400)));
+}
+
+#[test]
+fn test_schedule_next_maintenance_allows_technician_with_history() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let client = setup_client(&env);
+
+    let patient_id = Address::generate(&env);
+    let provider_id = Address::generate(&env);
+    let technician = Address::generate(&env);
+    let manufacturer = Address::generate(&env);
+
+    let device_id = client.register_device(
+        &manufacturer,
+        &String::from_str(&env, "UDI-77777-IMP"),
+        &Symbol::new(&env, "IMPLANT"),
+        &String::from_str(&env, "MedCorp"),
+        &String::from_str(&env, "MC-400"),
+        &String::from_str(&env, "LOT-004"),
+        &1690000000u64,
+        &None,
+        &dummy_hash(&env),
+        &DeviceExtras {
+            warranty_expiration_date: None,
+            maintenance_interval_days: Some(90u64),
+        },
+    );
+
+    let implant_id = client.implant_device(
+        &patient_id,
+        &device_id,
+        &provider_id,
+        &1700000000u64,
+        &String::from_str(&env, "Left Hip"),
+        &dummy_hash(&env),
+    );
+
+    // Technician records maintenance for this device's implant first,
+    // establishing their authorization via the device's maintenance history.
+    client.record_device_maintenance(
+        &implant_id,
+        &1710000000u64,
+        &Symbol::new(&env, "CALIBRATION"),
+        &technician,
+        &dummy_hash(&env),
+    );
+
+    let completed_date = 1710000000u64;
+    client.schedule_next_maintenance(&device_id, &completed_date, &technician);
+
+    assert!(client.check_maintenance_due(&device_id, &(completed_date + 90 * 86400)));
+}

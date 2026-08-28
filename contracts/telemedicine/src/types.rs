@@ -148,4 +148,6 @@ pub enum DataKey {
     ProviderSessionWindow(Address),
     /// Address of the external provider registry contract
     ProviderRegistryAddress,
+    /// Address of the stored admin
+    Admin,
 }

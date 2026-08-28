@@ -98,6 +98,7 @@ pub struct GuidelineMetadata {
 #[contracttype]
 pub enum DataKey {
     Admin,
+    ProviderRegistry,
     Guideline(String),
     ReminderCounter(Address),       // patient_id -> u64 (next reminder_id)
     Reminder(Address, u64),         // (patient_id, reminder_id) -> Reminder
@@ -115,6 +116,20 @@ impl ClinicalGuidelineContract {
             return Err(Error::NotAuthorized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
+        Ok(())
+    }
+
+    /// Set the provider registry address for authorization checks.
+    pub fn set_provider_registry(env: Env, provider_registry: Address) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotAuthorized)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::ProviderRegistry, &provider_registry);
         Ok(())
     }
 
@@ -207,10 +222,14 @@ impl ClinicalGuidelineContract {
     pub fn evaluate_guideline(
         env: Env,
         _patient_id: Address,
-        _provider_id: Address,
+        provider_id: Address,
         guideline_id: String,
         patient_data_hash: BytesN<32>,
     ) -> Result<GuidelineRecommendation, Error> {
+        provider_id.require_auth();
+        if !Self::is_provider_registered(&env, &provider_id) {
+            return Err(Error::NotAuthorized);
+        }
         let metadata: GuidelineMetadata = env
             .storage()
             .persistent()
@@ -232,10 +251,15 @@ impl ClinicalGuidelineContract {
     pub fn calculate_drug_dosage(
         env: Env,
         _patient_id: Address,
+        provider_id: Address,
         medication: String,
         weight_dg: u32, // Decigrams (0.1g) to avoid f32
         renal_function: Option<u32>,
     ) -> Result<DosageRecommendation, Error> {
+        provider_id.require_auth();
+        if !Self::is_provider_registered(&env, &provider_id) {
+            return Err(Error::NotAuthorized);
+        }
         let gfr = renal_function.unwrap_or(100);
         let is_renal_impaired = gfr < 60;
 
@@ -283,9 +307,14 @@ impl ClinicalGuidelineContract {
     pub fn assess_risk_score(
         env: Env,
         _patient_id: Address,
+        provider_id: Address,
         risk_calculator: Symbol,
         input_parameters: Vec<i32>,
     ) -> Result<RiskScore, Error> {
+        provider_id.require_auth();
+        if !Self::is_provider_registered(&env, &provider_id) {
+            return Err(Error::NotAuthorized);
+        }
         let mut total_score: i32 = 0;
         for val in input_parameters.iter() {
             total_score += val;
@@ -300,9 +329,14 @@ impl ClinicalGuidelineContract {
     pub fn suggest_care_pathway(
         env: Env,
         _patient_id: Address,
+        provider_id: Address,
         condition: String,
         _current_treatment: Vec<String>,
     ) -> Result<CarePathway, Error> {
+        provider_id.require_auth();
+        if !Self::is_provider_registered(&env, &provider_id) {
+            return Err(Error::NotAuthorized);
+        }
         let mut steps = Vec::new(&env);
         steps.push_back(String::from_str(&env, "Initial Diagnosis"));
         steps.push_back(String::from_str(&env, "Standard Treatment"));
@@ -364,10 +398,15 @@ impl ClinicalGuidelineContract {
     pub fn check_preventive_care(
         env: Env,
         _patient_id: Address,
+        provider_id: Address,
         age: u32,
         _gender: Symbol,
         _risk_factors: Vec<Symbol>,
     ) -> Result<Vec<Symbol>, Error> {
+        provider_id.require_auth();
+        if !Self::is_provider_registered(&env, &provider_id) {
+            return Err(Error::NotAuthorized);
+        }
         let mut alerts = Vec::new(&env);
 
         if age > 50 {
@@ -378,6 +417,20 @@ impl ClinicalGuidelineContract {
         }
 
         Ok(alerts)
+    }
+
+    fn is_provider_registered(env: &Env, provider: &Address) -> bool {
+        if let Some(registry) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::ProviderRegistry)
+        {
+            use provider_registry::ProviderRegistryClient;
+            let provider_client = ProviderRegistryClient::new(env, &registry);
+            provider_client.is_provider(provider)
+        } else {
+            false
+        }
     }
 }
 

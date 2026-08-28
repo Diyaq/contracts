@@ -72,7 +72,17 @@ impl TelemedicineContract {
         Ok(())
     }
 
-    /// Set the rate limit configuration. Callable by any admin.
+    /// Initialize the telemedicine contract with an admin.
+    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::NotAuthorized);
+        }
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        Ok(())
+    }
+
+    /// Set the rate limit configuration. Callable by the stored admin.
     pub fn set_rate_limit_config(
         env: Env,
         admin: Address,
@@ -80,6 +90,14 @@ impl TelemedicineContract {
         window_duration_secs: u64,
     ) -> Result<(), Error> {
         admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotAuthorized)?;
+        if admin != stored_admin {
+            return Err(Error::NotAuthorized);
+        }
 
         let config = RateLimitConfig {
             max_sessions_per_window,
@@ -485,7 +503,7 @@ impl TelemedicineContract {
         Ok(())
     }
 
-    /// Set jurisdiction policy (compact membership). Callable by any authorized admin.
+    /// Set jurisdiction policy (compact membership). Callable by the stored admin.
     pub fn set_jurisdiction_policy(
         env: Env,
         admin: Address,
@@ -494,6 +512,14 @@ impl TelemedicineContract {
         compact_members: String,
     ) -> Result<(), Error> {
         admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotAuthorized)?;
+        if admin != stored_admin {
+            return Err(Error::NotAuthorized);
+        }
 
         let policy = JurisdictionPolicy {
             jurisdiction: jurisdiction.clone(),
@@ -591,7 +617,19 @@ impl TelemedicineContract {
             }
         }
 
-        let rx_id = env.ledger().timestamp() % 100000;
+        let rx_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PrescriptionCount)
+            .unwrap_or(0)
+            + 1;
+        env.storage()
+            .persistent()
+            .set(&DataKey::PrescriptionCount, &rx_id);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Prescription(rx_id), &prescription_details);
 
         env.events().publish(
             (Symbol::new(&env, "prescription_issued"), visit_id),
@@ -612,10 +650,29 @@ impl TelemedicineContract {
         requires_inperson: bool,
     ) -> Result<(), Error> {
         admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotAuthorized)?;
+        if admin != stored_admin {
+            return Err(Error::NotAuthorized);
+        }
         env.storage()
             .persistent()
             .set(&DataKey::ControlledSubstancePolicy(jurisdiction), &requires_inperson);
         Ok(())
+    }
+
+    /// Retrieve a prescription by its rx_id.
+    pub fn get_prescription(
+        env: Env,
+        rx_id: u64,
+    ) -> Result<PrescriptionRequest, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Prescription(rx_id))
+            .ok_or(Error::VisitNotFound)
     }
 }
 

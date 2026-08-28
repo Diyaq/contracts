@@ -824,6 +824,31 @@ impl MedicalClaimsSystem {
         env.storage()
             .persistent()
             .set(&DataKey::AuthorizedReviewers, &reviewers);
+
+        // Clear deactivation flag if reviewer is being re-activated
+        env.storage()
+            .persistent()
+            .remove(&DataKey::DeactivatedReviewers(reviewer));
+
+        Ok(())
+    }
+
+    /// Admin-only: deactivate an authorized dispute reviewer, preventing them from resolving disputes.
+    pub fn deactivate_reviewer(env: Env, admin: Address, reviewer: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(Error::NotAuthorized);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::DeactivatedReviewers(reviewer), &true);
+
         Ok(())
     }
 
@@ -892,6 +917,16 @@ impl MedicalClaimsSystem {
         resolution_hash: BytesN<32>,
     ) -> Result<(), Error> {
         reviewer.require_auth();
+
+        // Check if reviewer is deactivated
+        let is_deactivated: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DeactivatedReviewers(reviewer.clone()))
+            .unwrap_or(false);
+        if is_deactivated {
+            return Err(Error::NotAuthorizedReviewer);
+        }
 
         // Verify reviewer is authorized
         let reviewers: Vec<Address> = env

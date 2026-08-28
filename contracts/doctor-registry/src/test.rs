@@ -30,6 +30,8 @@ fn test_create_doctor_profile() {
     assert_eq!(profile.specialization, String::from_str(&env, "Cardiology"));
     assert_eq!(profile.institution_wallet, institution_wallet);
     assert_eq!(profile.metadata, String::from_str(&env, ""));
+    assert_eq!(profile.active, true);
+    assert_eq!(profile.revoked_at, None);
 }
 
 #[test]
@@ -253,3 +255,100 @@ fn test_non_admin_cannot_create_profile() {
 
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
+
+#[test]
+fn test_deactivate_and_reactivate_doctor_lifecycle() {
+    let env = Env::default();
+    let contract_id = env.register(DoctorRegistry, ());
+    let client = DoctorRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let doctor_wallet = Address::generate(&env);
+    let institution_wallet = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+
+    client.create_doctor_profile(
+        &admin,
+        &doctor_wallet,
+        &String::from_str(&env, "Dr. Gregory House"),
+        &String::from_str(&env, "Diagnostic Medicine"),
+        &institution_wallet,
+    );
+
+    // Initial state: active == true, revoked_at == None, is_active == true
+    let profile = client.get_doctor_profile(&doctor_wallet);
+    assert_eq!(profile.active, true);
+    assert_eq!(profile.revoked_at, None);
+    assert_eq!(client.is_active(&doctor_wallet), true);
+
+    // Deactivate doctor profile
+    client.deactivate_doctor_profile(&admin, &doctor_wallet);
+
+    let deactivated_profile = client.get_doctor_profile(&doctor_wallet);
+    assert_eq!(deactivated_profile.active, false);
+    assert_eq!(deactivated_profile.revoked_at, Some(env.ledger().timestamp()));
+    assert_eq!(client.is_active(&doctor_wallet), false);
+
+    // Reactivate doctor profile
+    client.reactivate_doctor_profile(&admin, &doctor_wallet);
+
+    let reactivated_profile = client.get_doctor_profile(&doctor_wallet);
+    assert_eq!(reactivated_profile.active, true);
+    assert_eq!(reactivated_profile.revoked_at, None);
+    assert_eq!(client.is_active(&doctor_wallet), true);
+}
+
+#[test]
+fn test_deactivate_and_reactivate_unauthorized() {
+    let env = Env::default();
+    let contract_id = env.register(DoctorRegistry, ());
+    let client = DoctorRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let doctor_wallet = Address::generate(&env);
+    let institution_wallet = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+
+    client.create_doctor_profile(
+        &admin,
+        &doctor_wallet,
+        &String::from_str(&env, "Dr. Wilson"),
+        &String::from_str(&env, "Oncology"),
+        &institution_wallet,
+    );
+
+    // Non-admin cannot deactivate
+    let res_deact = client.try_deactivate_doctor_profile(&attacker, &doctor_wallet);
+    assert_eq!(res_deact, Err(Ok(Error::Unauthorized)));
+
+    // Non-admin cannot reactivate
+    let res_react = client.try_reactivate_doctor_profile(&attacker, &doctor_wallet);
+    assert_eq!(res_react, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_deactivate_and_reactivate_nonexistent_profile_fails() {
+    let env = Env::default();
+    let contract_id = env.register(DoctorRegistry, ());
+    let client = DoctorRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let unknown_doctor = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+
+    let res_deact = client.try_deactivate_doctor_profile(&admin, &unknown_doctor);
+    assert_eq!(res_deact, Err(Ok(Error::ProfileNotFound)));
+
+    let res_react = client.try_reactivate_doctor_profile(&admin, &unknown_doctor);
+    assert_eq!(res_react, Err(Ok(Error::ProfileNotFound)));
+
+    assert_eq!(client.is_active(&unknown_doctor), false);
+}
+

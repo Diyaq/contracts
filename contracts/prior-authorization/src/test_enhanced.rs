@@ -344,6 +344,118 @@ fn test_review_after_sla_deadline_fails() {
     assert!(result.is_err());
 }
 
+// ── Cross-insurer escalation isolation (#734) ─────────────────────────────────
+
+#[test]
+fn test_escalate_does_not_hijack_other_insurers_requests() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let insurer_a = Address::generate(&env);
+    let insurer_b = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let patient = Address::generate(&env);
+
+    // One shared insurer registry with BOTH insurers registered as active.
+    let ir_id = env.register_contract(None, InsurerRegistry);
+    let ir_client = InsurerRegistryClient::new(&env, &ir_id);
+    let issuer = Address::generate(&env);
+
+    ir_client.register_insurer(
+        &insurer_a,
+        &String::from_str(&env, "Insurer A"),
+        &String::from_str(&env, "LIC-A"),
+        &String::from_str(&env, "metadata"),
+        &dummy_hash(&env, 1),
+        &issuer,
+        &dummy_hash(&env, 2),
+        &4_100_000_000_u64,
+        &dummy_hash(&env, 3),
+    );
+    let mut svc_a = Vec::new(&env);
+    svc_a.push_back(String::from_str(&env, "CPT99213"));
+    let mut plans_a = Vec::new(&env);
+    plans_a.push_back(CoveragePlan {
+        plan_id: 1,
+        plan_name: String::from_str(&env, "Plan A"),
+        service_codes: svc_a,
+        is_active: true,
+        effective_from: 0,
+        effective_until: None,
+    });
+    ir_client.set_coverage_plans(&insurer_a, &plans_a);
+
+    ir_client.register_insurer(
+        &insurer_b,
+        &String::from_str(&env, "Insurer B"),
+        &String::from_str(&env, "LIC-B"),
+        &String::from_str(&env, "metadata"),
+        &dummy_hash(&env, 4),
+        &issuer,
+        &dummy_hash(&env, 5),
+        &4_100_000_000_u64,
+        &dummy_hash(&env, 6),
+    );
+    let mut svc_b = Vec::new(&env);
+    svc_b.push_back(String::from_str(&env, "CPT99213"));
+    let mut plans_b = Vec::new(&env);
+    plans_b.push_back(CoveragePlan {
+        plan_id: 2,
+        plan_name: String::from_str(&env, "Plan B"),
+        service_codes: svc_b,
+        is_active: true,
+        effective_from: 0,
+        effective_until: None,
+    });
+    ir_client.set_coverage_plans(&insurer_b, &plans_b);
+
+    // One shared PriorAuthorizationContract instance backed by that registry.
+    let contract_id = env.register(PriorAuthorizationContract, ());
+    let client = PriorAuthorizationContractClient::new(&env, &contract_id);
+    client.initialize(&ir_id);
+
+    // Each insurer has its own reviewer pool so insurer_b's call doesn't
+    // short-circuit on an empty reviewer pool.
+    let reviewer_a = Address::generate(&env);
+    let reviewer_b = Address::generate(&env);
+    register_reviewer(&env, &client, &insurer_a, &reviewer_a);
+    register_reviewer(&env, &client, &insurer_b, &reviewer_b);
+
+    // Submit a request under insurer_a and let it breach its SLA.
+    let auth_id = submit_auth(
+        &env,
+        &client,
+        &provider,
+        &patient,
+        &insurer_a,
+        &Symbol::new(&env, "routine"),
+    );
+    env.ledger().with_mut(|li| li.timestamp += 300_000);
+
+    // Trigger breach detection, which pushes it onto the shared overdue list.
+    let info = client.get_authorization_status(&auth_id, &provider);
+    assert!(matches!(info.status, AuthStatus::Submitted));
+
+    // insurer_b calls escalate_expired_authorizations — it must NOT touch
+    // insurer_a's overdue request.
+    let count_b = client.escalate_expired_authorizations(&insurer_b);
+    assert_eq!(count_b, 0);
+
+    // insurer_a's request is completely unaffected: still Submitted, not
+    // reassigned to a reviewer and not removed from the overdue list.
+    let info_after_b = client.get_authorization_status(&auth_id, &provider);
+    assert!(matches!(info_after_b.status, AuthStatus::Submitted));
+
+    // insurer_a's own escalation run still successfully escalates it,
+    // proving insurer_b's call did not silently remove it from the overdue
+    // list.
+    let count_a = client.escalate_expired_authorizations(&insurer_a);
+    assert_eq!(count_a, 1);
+
+    let info_after_a = client.get_authorization_status(&auth_id, &provider);
+    assert!(matches!(info_after_a.status, AuthStatus::Escalated));
+}
+
 // ── Insurer binding (#684) ────────────────────────────────────────────────────
 
 #[test]

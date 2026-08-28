@@ -320,7 +320,7 @@ fn test_calculate_infection_rate() {
 
     for _ in 0..2 {
         let patient = Address::generate(&env);
-        report_case(
+        let infection_id = report_case(
             &env,
             &client,
             &patient,
@@ -330,6 +330,7 @@ fn test_calculate_infection_rate() {
             "ICU",
             &reporter,
         );
+        client.record_patient_days(&infection_id, &500, &reporter);
     }
 
     let rate = client.calculate_infection_rate(
@@ -619,8 +620,6 @@ fn test_calculate_infection_rate_with_device_days() {
         &None,
     );
 
-    assert!(rate.is_ok());
-    let rate = rate.unwrap();
     assert_eq!(rate.numerator, 1);
     assert_eq!(rate.denominator, 10);
 }
@@ -657,8 +656,6 @@ fn test_calculate_infection_rate_with_patient_days() {
         &None,
     );
 
-    assert!(rate.is_ok());
-    let rate = rate.unwrap();
     assert_eq!(rate.numerator, 1);
     assert_eq!(rate.denominator, 50);
 }
@@ -690,5 +687,4 @@ fn test_calculate_infection_rate_no_denominator_fails() {
     );
 
     assert!(rate.is_err());
-}
 }
