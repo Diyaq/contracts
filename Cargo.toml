@@ -43,6 +43,8 @@ members = [
   "contracts/zk-eligibility-verifier",
   "contracts/prior-authorization",
   "contracts/scholarship-fund",
+  "contracts/liquidity-pool",
+  "contracts/ttl-config",
 ]
 exclude = ["contracts/patient-registry/benches"]
 
