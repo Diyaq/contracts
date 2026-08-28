@@ -746,16 +746,28 @@ impl MedicalDeviceRegistry {
     }
 
     /// Schedule next maintenance after current maintenance is completed.
+    ///
+    /// Restricted to the device's manufacturer or a technician who has an
+    /// existing entry in the device's maintenance history (i.e. previously
+    /// called `record_device_maintenance` for one of this device's implants),
+    /// mirroring the authorization already used for device-level actions
+    /// (`register_device`, `issue_device_recall`) and technician-authenticated
+    /// service records (`record_device_maintenance`).
     pub fn schedule_next_maintenance(
         env: Env,
         device_id: u64,
         maintenance_completed_date: u64,
+        performed_by: Address,
     ) -> Result<(), Error> {
+        performed_by.require_auth();
+
         let mut device: DeviceRecord = env
             .storage()
             .persistent()
             .get(&DataKey::DeviceRecord(device_id))
             .ok_or(Error::RecordNotFound)?;
+
+        Self::assert_authorized_for_device_maintenance(&env, &performed_by, &device)?;
 
         if let Some(interval) = device.maintenance_interval_days {
             device.next_scheduled_maintenance =
@@ -767,6 +779,50 @@ impl MedicalDeviceRegistry {
         } else {
             Err(Error::InvalidInput)
         }
+    }
+
+    /// Verify that `performed_by` is authorized to manage maintenance for `device`:
+    /// either the device's registered manufacturer, or a technician who already
+    /// appears in the device's maintenance history via a prior
+    /// `record_device_maintenance` call on one of the device's implants.
+    fn assert_authorized_for_device_maintenance(
+        env: &Env,
+        performed_by: &Address,
+        device: &DeviceRecord,
+    ) -> Result<(), Error> {
+        if *performed_by == device.manufacturer_id {
+            return Ok(());
+        }
+
+        let implant_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DeviceImplants(device.device_id))
+            .unwrap_or(Vec::new(env));
+
+        for implant_id in implant_ids.iter() {
+            if let Some(implant) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, ImplantRecord>(&DataKey::ImplantRecord(implant_id))
+            {
+                for maintenance_id in implant.maintenance_history.iter() {
+                    if let Some(maintenance) = env
+                        .storage()
+                        .persistent()
+                        .get::<DataKey, MaintenanceRecord>(&DataKey::MaintenanceRecord(
+                            maintenance_id,
+                        ))
+                    {
+                        if maintenance.performed_by == *performed_by {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
+        Err(Error::NotAuthorized)
     }
 
     /// Flag devices that are out of warranty (warranty expired and no active coverage).
