@@ -503,13 +503,7 @@ impl UpgradeGovernance {
         match proposal.status {
             ProposalStatus::Executed => return Err(Error::AlreadyExecuted),
             ProposalStatus::Cancelled => return Err(Error::Cancelled),
-            ProposalStatus::Approved => {
-                // For Approved proposals, only the original proposer may cancel.
-                let is_proposer = proposal.votes.first().map_or(false, |v| v == &caller);
-                if !is_proposer {
-                    return Err(Error::NotAuthorized);
-                }
-            }
+            ProposalStatus::Approved => {}
             ProposalStatus::Active => {}
         }
 
@@ -620,8 +614,19 @@ impl UpgradeGovernance {
         proposer.require_auth();
         Self::assert_signer(&env, &proposer)?;
 
-        if env.storage().persistent().has(&DataKey::SignerProposal) {
-            return Err(Error::ProposalExists);
+        if let Some(existing) = env
+            .storage()
+            .persistent()
+            .get::<_, SignerProposal>(&DataKey::SignerProposal)
+        {
+            if existing.status == SignerProposalStatus::Pending {
+                if env.ledger().timestamp() <= existing.proposed_at + VOTING_WINDOW {
+                    // Active proposal still within its TTL — reject.
+                    return Err(Error::ProposalExists);
+                }
+                // Expired pending proposal — fall through and overwrite.
+            }
+            // Finalized (Executed) proposals do not block new ones.
         }
 
         let signers: Vec<Address> = env

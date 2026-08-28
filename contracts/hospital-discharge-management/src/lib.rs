@@ -103,8 +103,9 @@ impl HospitalDischargeContract {
     ) -> Result<ReadinessScore, Error> {
         caller.require_auth();
 
-        // Validate plan exists
+        // Validate plan exists and caller is authorized
         validate_plan_exists(&env, discharge_plan_id)?;
+        Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
 
         let mut plan = get_discharge_plan(&env, discharge_plan_id)?;
         if plan.status != DischargeStatus::Planning && plan.status != DischargeStatus::ReadinessAssessed {
@@ -277,8 +278,9 @@ impl HospitalDischargeContract {
     ) -> Result<Vec<u64>, Error> {
         caller.require_auth();
 
-        // Validate plan exists
+        // Validate plan exists and caller is authorized
         validate_plan_exists(&env, discharge_plan_id)?;
+        Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
 
         let mut appointment_ids = Vec::new(&env);
 
@@ -308,8 +310,9 @@ impl HospitalDischargeContract {
     ) -> Result<(), Error> {
         caller.require_auth();
 
-        // Validate plan exists
+        // Validate plan exists and caller is authorized
         validate_plan_exists(&env, discharge_plan_id)?;
+        Self::verify_plan_authorization(&env, &caller, discharge_plan_id)?;
 
         let education = DischargeEducation {
             discharge_plan_id,

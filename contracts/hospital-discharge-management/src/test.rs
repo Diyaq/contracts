@@ -648,3 +648,46 @@ fn test_modify_completed_or_cancelled_plan_fails() {
     let result_orders = client.try_create_discharge_orders(&admin, &plan_id, &medications, &instructions, &restrictions);
     assert!(result_orders.is_err());
 }
+
+#[test]
+fn test_assess_discharge_readiness_unauthorized() {
+    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
+    let contract_id = env.register(HospitalDischargeContract, ());
+    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+
+    let plan_id = client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
+
+    let stranger = Address::generate(&env);
+    let notes = String::from_str(&env, "Patient stable");
+    let result = client.try_assess_discharge_readiness(&stranger, &plan_id, &85u32, &80u32, &90u32, &notes);
+    assert_eq!(result.unwrap_err().unwrap(), Error::Unauthorized);
+}
+
+#[test]
+fn test_schedule_followup_appointments_unauthorized() {
+    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
+    let contract_id = env.register(HospitalDischargeContract, ());
+    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+
+    let plan_id = client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
+
+    let stranger = Address::generate(&env);
+    let appointments = Vec::new(&env);
+    let result = client.try_schedule_followup_appointments(&stranger, &plan_id, &appointments);
+    assert_eq!(result.unwrap_err().unwrap(), Error::Unauthorized);
+}
+
+#[test]
+fn test_provide_discharge_education_unauthorized() {
+    let (env, admin, _patient, patient_id, hospital_id) = create_test_env();
+    let contract_id = env.register(HospitalDischargeContract, ());
+    let client = HospitalDischargeContractClient::new(&env, &contract_id);
+
+    let plan_id = client.initiate_discharge_planning(&admin, &patient_id, &hospital_id, &1000u64, &2000u64);
+
+    let stranger = Address::generate(&env);
+    let topics = Vec::new(&env);
+    let materials = Vec::new(&env);
+    let result = client.try_provide_discharge_education(&stranger, &plan_id, &topics, &materials, &80u32);
+    assert_eq!(result.unwrap_err().unwrap(), Error::Unauthorized);
+}

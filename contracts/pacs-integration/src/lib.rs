@@ -185,7 +185,7 @@ impl PacsContract {
             report_hash,
             critical_findings,
             reported_at: env.ledger().timestamp(),
-            critical_finding_acknowledged_at: None,
+            crit_find_ack_at: None,
         };
 
         save_report(&env, &report);
@@ -371,6 +371,21 @@ impl PacsContract {
             if study.patient_id != patient_id {
                 return Err(Error::Unauthorized);
             }
+            if requesting_provider != study.ordering_provider {
+                let grants = load_access_list(&env, sid);
+                let mut authorized = false;
+                for grant in grants.iter() {
+                    if grant.viewer_id == requesting_provider {
+                        if Self::assert_active_grant(&env, sid, &requesting_provider, &grant.purpose).is_ok() {
+                            authorized = true;
+                            break;
+                        }
+                    }
+                }
+                if !authorized {
+                    return Err(Error::Unauthorized);
+                }
+            }
         }
 
         let cd_id = next_cd_id(&env);
@@ -455,6 +470,10 @@ impl PacsContract {
         );
 
         Ok(anon_uid)
+    }
+
+    pub fn get_imaging_study(env: Env, study_id: u64) -> Result<ImagingStudy, Error> {
+        load_study(&env, study_id).ok_or(Error::NotFound)
     }
 
     /// Return the anonymized UID for a given study and rotation epoch.
@@ -712,7 +731,7 @@ impl PacsContract {
             return Err(Error::InvalidInput);
         }
 
-        report.critical_finding_acknowledged_at = Some(acknowledged_at);
+        report.crit_find_ack_at = Some(acknowledged_at);
         save_report(&env, &report);
 
         env.events().publish(
@@ -724,7 +743,7 @@ impl PacsContract {
     }
 
     /// List unacknowledged critical findings older than threshold seconds
-    pub fn list_unacknowledged_critical_findings(
+    pub fn list_unack_crit_findings(
         env: Env,
         provider_id: Address,
         threshold_seconds: u64,
@@ -758,9 +777,8 @@ impl PacsContract {
                 if let Some(report) = load_report(&env, study_id) {
                     if report.critical_findings {
                         // If not acknowledged or acknowledged after threshold
-                        let is_unacknowledged = if let Some(ack_time) = report.critical_finding_acknowledged_at {
-                            // Acknowledged, but check if it's too old (acknowledged > threshold seconds ago)
-                            current_time > ack_time && (current_time - ack_time) < threshold_seconds
+                        let is_unacknowledged = if report.crit_find_ack_at.is_some() {
+                            false
                         } else {
                             // Not acknowledged yet
                             current_time > report.reported_at && (current_time - report.reported_at) > threshold_seconds
