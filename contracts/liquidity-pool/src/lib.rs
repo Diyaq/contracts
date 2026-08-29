@@ -81,6 +81,7 @@ impl LiquidityPoolContract {
         token_a: Address,
         token_b: Address,
     ) -> Result<(), Error> {
+        admin.require_auth();
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
