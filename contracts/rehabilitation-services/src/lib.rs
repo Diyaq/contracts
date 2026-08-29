@@ -280,6 +280,30 @@ impl TryFrom<soroban_sdk::Error> for Error {
     }
 }
 
+/// Returns true if `caller` is the evaluation's treating therapist or the patient it belongs to.
+fn is_bound_to_evaluation(eval: &PTEvaluation, caller: &Address) -> bool {
+    *caller == eval.therapist_id || *caller == eval.patient_id
+}
+
+/// Returns true if `caller` is the plan's treating therapist or the patient linked to it via
+/// the originating evaluation. Mirrors care-plan's `is_bound_to_plan`: the primary custodian
+/// (therapist, standing in for care-plan's provider) short-circuits, then the wider membership
+/// is checked. Rehabilitation-services has no separate care-team roster, so the patient reached
+/// through the plan's evaluation is the only other bound party.
+fn is_bound_to_plan(env: &Env, plan: &RehabTreatmentPlan, caller: &Address) -> bool {
+    if *caller == plan.therapist_id {
+        return true;
+    }
+    if let Some(eval) = env
+        .storage()
+        .persistent()
+        .get::<_, PTEvaluation>(&DataKey::Evaluation(plan.evaluation_id))
+    {
+        return *caller == eval.patient_id;
+    }
+    false
+}
+
 #[contract]
 pub struct RehabilitationServicesContract;
 
@@ -864,74 +888,229 @@ impl RehabilitationServicesContract {
     }
 
     /// Retrieve the full version history for a treatment plan.
-    pub fn get_treatment_plan_history(env: Env, plan_id: u64) -> Vec<PlanVersionEntry> {
-        env.storage()
+    ///
+    /// `caller` must be the plan's treating therapist or the patient it belongs to.
+    pub fn get_treatment_plan_history(
+        env: Env,
+        caller: Address,
+        plan_id: u64,
+    ) -> Result<Vec<PlanVersionEntry>, Error> {
+        caller.require_auth();
+
+        let plan: RehabTreatmentPlan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreatmentPlan(plan_id))
+            .ok_or(Error::NotFound)?;
+        if !is_bound_to_plan(&env, &plan, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        Ok(env
+            .storage()
             .persistent()
             .get(&DataKey::PlanVersionHistory(plan_id))
-            .unwrap_or(Vec::new(&env))
+            .unwrap_or(Vec::new(&env)))
     }
 
     // Query functions
-    pub fn get_evaluation(env: Env, evaluation_id: u64) -> Result<PTEvaluation, Error> {
-        env.storage()
+    //
+    // Every getter below requires the caller to authenticate and to be bound to the
+    // evaluation/plan being read (its treating therapist or its patient) — see
+    // `is_bound_to_evaluation` / `is_bound_to_plan`.
+
+    pub fn get_evaluation(
+        env: Env,
+        caller: Address,
+        evaluation_id: u64,
+    ) -> Result<PTEvaluation, Error> {
+        caller.require_auth();
+
+        let eval: PTEvaluation = env
+            .storage()
             .persistent()
             .get(&DataKey::Evaluation(evaluation_id))
-            .ok_or(Error::NotFound)
+            .ok_or(Error::NotFound)?;
+        if !is_bound_to_evaluation(&eval, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        Ok(eval)
     }
 
-    pub fn get_treatment_plan(env: Env, plan_id: u64) -> Result<RehabTreatmentPlan, Error> {
-        env.storage()
+    pub fn get_treatment_plan(
+        env: Env,
+        caller: Address,
+        plan_id: u64,
+    ) -> Result<RehabTreatmentPlan, Error> {
+        caller.require_auth();
+
+        let plan: RehabTreatmentPlan = env
+            .storage()
             .persistent()
             .get(&DataKey::TreatmentPlan(plan_id))
-            .ok_or(Error::NotFound)
+            .ok_or(Error::NotFound)?;
+        if !is_bound_to_plan(&env, &plan, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        Ok(plan)
     }
 
-    pub fn get_rom_assessments(env: Env, evaluation_id: u64) -> Vec<ROMAssessment> {
-        env.storage()
+    pub fn get_rom_assessments(
+        env: Env,
+        caller: Address,
+        evaluation_id: u64,
+    ) -> Result<Vec<ROMAssessment>, Error> {
+        caller.require_auth();
+
+        let eval: PTEvaluation = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Evaluation(evaluation_id))
+            .ok_or(Error::NotFound)?;
+        if !is_bound_to_evaluation(&eval, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        Ok(env
+            .storage()
             .persistent()
             .get(&DataKey::ROMAssessments(evaluation_id))
-            .unwrap_or(Vec::new(&env))
+            .unwrap_or(Vec::new(&env)))
     }
 
-    pub fn get_strength_assessments(env: Env, evaluation_id: u64) -> Vec<StrengthAssessment> {
-        env.storage()
+    pub fn get_strength_assessments(
+        env: Env,
+        caller: Address,
+        evaluation_id: u64,
+    ) -> Result<Vec<StrengthAssessment>, Error> {
+        caller.require_auth();
+
+        let eval: PTEvaluation = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Evaluation(evaluation_id))
+            .ok_or(Error::NotFound)?;
+        if !is_bound_to_evaluation(&eval, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        Ok(env
+            .storage()
             .persistent()
             .get(&DataKey::StrengthAssessments(evaluation_id))
-            .unwrap_or(Vec::new(&env))
+            .unwrap_or(Vec::new(&env)))
     }
 
-    pub fn get_therapy_sessions(env: Env, treatment_plan_id: u64) -> Vec<TherapySession> {
-        env.storage()
+    pub fn get_therapy_sessions(
+        env: Env,
+        caller: Address,
+        treatment_plan_id: u64,
+    ) -> Result<Vec<TherapySession>, Error> {
+        caller.require_auth();
+
+        let plan: RehabTreatmentPlan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreatmentPlan(treatment_plan_id))
+            .ok_or(Error::NotFound)?;
+        if !is_bound_to_plan(&env, &plan, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        Ok(env
+            .storage()
             .persistent()
             .get(&DataKey::TherapySessions(treatment_plan_id))
-            .unwrap_or(Vec::new(&env))
+            .unwrap_or(Vec::new(&env)))
     }
 
-    pub fn get_pain_measurements(env: Env, treatment_plan_id: u64) -> Vec<PainMeasurement> {
-        env.storage()
+    pub fn get_pain_measurements(
+        env: Env,
+        caller: Address,
+        treatment_plan_id: u64,
+    ) -> Result<Vec<PainMeasurement>, Error> {
+        caller.require_auth();
+
+        let plan: RehabTreatmentPlan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreatmentPlan(treatment_plan_id))
+            .ok_or(Error::NotFound)?;
+        if !is_bound_to_plan(&env, &plan, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        Ok(env
+            .storage()
             .persistent()
             .get(&DataKey::PainMeasurements(treatment_plan_id))
-            .unwrap_or(Vec::new(&env))
+            .unwrap_or(Vec::new(&env)))
     }
 
-    pub fn get_functional_outcomes(env: Env, treatment_plan_id: u64) -> Vec<FunctionalOutcome> {
-        env.storage()
+    pub fn get_functional_outcomes(
+        env: Env,
+        caller: Address,
+        treatment_plan_id: u64,
+    ) -> Result<Vec<FunctionalOutcome>, Error> {
+        caller.require_auth();
+
+        let plan: RehabTreatmentPlan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreatmentPlan(treatment_plan_id))
+            .ok_or(Error::NotFound)?;
+        if !is_bound_to_plan(&env, &plan, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        Ok(env
+            .storage()
             .persistent()
             .get(&DataKey::FunctionalOutcomes(treatment_plan_id))
-            .unwrap_or(Vec::new(&env))
+            .unwrap_or(Vec::new(&env)))
     }
 
-    pub fn get_progress_notes(env: Env, treatment_plan_id: u64) -> Vec<ProgressNote> {
-        env.storage()
+    pub fn get_progress_notes(
+        env: Env,
+        caller: Address,
+        treatment_plan_id: u64,
+    ) -> Result<Vec<ProgressNote>, Error> {
+        caller.require_auth();
+
+        let plan: RehabTreatmentPlan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreatmentPlan(treatment_plan_id))
+            .ok_or(Error::NotFound)?;
+        if !is_bound_to_plan(&env, &plan, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        Ok(env
+            .storage()
             .persistent()
             .get(&DataKey::ProgressNotes(treatment_plan_id))
-            .unwrap_or(Vec::new(&env))
+            .unwrap_or(Vec::new(&env)))
     }
 
     pub fn get_discharge_record(
         env: Env,
+        caller: Address,
         treatment_plan_id: u64,
     ) -> Result<DischargeRecord, Error> {
+        caller.require_auth();
+
+        let plan: RehabTreatmentPlan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreatmentPlan(treatment_plan_id))
+            .ok_or(Error::NotFound)?;
+        if !is_bound_to_plan(&env, &plan, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
         env.storage()
             .persistent()
             .get(&DataKey::Discharge(treatment_plan_id))
@@ -940,12 +1119,25 @@ impl RehabilitationServicesContract {
 
     pub fn get_balance_mobility_assessments(
         env: Env,
+        caller: Address,
         evaluation_id: u64,
-    ) -> Vec<BalanceMobilityAssessment> {
-        env.storage()
+    ) -> Result<Vec<BalanceMobilityAssessment>, Error> {
+        caller.require_auth();
+
+        let eval: PTEvaluation = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Evaluation(evaluation_id))
+            .ok_or(Error::NotFound)?;
+        if !is_bound_to_evaluation(&eval, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        Ok(env
+            .storage()
             .persistent()
             .get(&DataKey::BalanceMobilityAssessments(evaluation_id))
-            .unwrap_or(Vec::new(&env))
+            .unwrap_or(Vec::new(&env)))
     }
 
     // ── Goal tracking ──────────────────────────────────────────────────────────
@@ -1092,7 +1284,25 @@ impl RehabilitationServicesContract {
     }
 
     /// Return the full time-series progress for a measurable goal.
-    pub fn get_goal_progress(env: Env, plan_id: u64, goal_id: u64) -> Vec<ProgressEntry> {
+    ///
+    /// `caller` must be bound to the plan (its treating therapist or its patient).
+    pub fn get_goal_progress(
+        env: Env,
+        caller: Address,
+        plan_id: u64,
+        goal_id: u64,
+    ) -> Result<Vec<ProgressEntry>, Error> {
+        caller.require_auth();
+
+        let plan: RehabTreatmentPlan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreatmentPlan(plan_id))
+            .ok_or(Error::NotFound)?;
+        if !is_bound_to_plan(&env, &plan, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
         // Validate goal belongs to this plan before returning.
         if let Some(goal) = env
             .storage()
@@ -1100,24 +1310,44 @@ impl RehabilitationServicesContract {
             .get::<_, MeasurableGoal>(&DataKey::MeasurableGoal(goal_id))
         {
             if goal.plan_id != plan_id {
-                return Vec::new(&env);
+                return Ok(Vec::new(&env));
             }
         } else {
-            return Vec::new(&env);
+            return Ok(Vec::new(&env));
         }
 
-        env.storage()
+        Ok(env
+            .storage()
             .persistent()
             .get(&DataKey::GoalProgressList(goal_id))
-            .unwrap_or(Vec::new(&env))
+            .unwrap_or(Vec::new(&env)))
     }
 
     /// Return a measurable goal by ID.
-    pub fn get_measurable_goal(env: Env, goal_id: u64) -> Result<MeasurableGoal, Error> {
-        env.storage()
+    ///
+    /// `caller` must be bound to the goal's plan (its treating therapist or its patient).
+    pub fn get_measurable_goal(
+        env: Env,
+        caller: Address,
+        goal_id: u64,
+    ) -> Result<MeasurableGoal, Error> {
+        caller.require_auth();
+
+        let goal: MeasurableGoal = env
+            .storage()
             .persistent()
             .get(&DataKey::MeasurableGoal(goal_id))
-            .ok_or(Error::NotFound)
+            .ok_or(Error::NotFound)?;
+        let plan: RehabTreatmentPlan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreatmentPlan(goal.plan_id))
+            .ok_or(Error::NotFound)?;
+        if !is_bound_to_plan(&env, &plan, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
+        Ok(goal)
     }
 
     // ── Paginated getters (#564) ───────────────────────────────────────────────
@@ -1129,10 +1359,22 @@ impl RehabilitationServicesContract {
     /// favour of this function for large session lists.
     pub fn get_therapy_sessions_paged(
         env: Env,
+        caller: Address,
         treatment_plan_id: u64,
         page: u32,
         page_size: u32,
-    ) -> TherapyPage {
+    ) -> Result<TherapyPage, Error> {
+        caller.require_auth();
+
+        let plan: RehabTreatmentPlan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreatmentPlan(treatment_plan_id))
+            .ok_or(Error::NotFound)?;
+        if !is_bound_to_plan(&env, &plan, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
         let page_size = page_size.clamp(1, MAX_PAGE_SIZE);
         let all: Vec<TherapySession> = env
             .storage()
@@ -1147,10 +1389,10 @@ impl RehabilitationServicesContract {
             items.push_back(all.get(i).unwrap());
             i += 1;
         }
-        TherapyPage {
+        Ok(TherapyPage {
             items,
             has_more: (start + page_size) < total,
-        }
+        })
     }
 
     /// Paginated progress notes for a treatment plan.
@@ -1158,10 +1400,22 @@ impl RehabilitationServicesContract {
     /// `page` is 0-indexed. `page_size` is capped at `MAX_PAGE_SIZE`.
     pub fn get_progress_notes_paged(
         env: Env,
+        caller: Address,
         treatment_plan_id: u64,
         page: u32,
         page_size: u32,
-    ) -> NotePage {
+    ) -> Result<NotePage, Error> {
+        caller.require_auth();
+
+        let plan: RehabTreatmentPlan = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TreatmentPlan(treatment_plan_id))
+            .ok_or(Error::NotFound)?;
+        if !is_bound_to_plan(&env, &plan, &caller) {
+            return Err(Error::Unauthorized);
+        }
+
         let page_size = page_size.clamp(1, MAX_PAGE_SIZE);
         let all: Vec<ProgressNote> = env
             .storage()
@@ -1176,10 +1430,10 @@ impl RehabilitationServicesContract {
             items.push_back(all.get(i).unwrap());
             i += 1;
         }
-        NotePage {
+        Ok(NotePage {
             items,
             has_more: (start + page_size) < total,
-        }
+        })
     }
 }
 
