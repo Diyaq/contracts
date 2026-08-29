@@ -95,6 +95,7 @@ impl LiquidityPoolContract {
     }
 
     /// Deposit token_a and token_b amounts; mint LP shares proportionally.
+    /// For non-initial deposits, computes optimal amounts to maintain pool ratio.
     pub fn add_liquidity(
         env: Env,
         provider: Address,
@@ -121,15 +122,21 @@ impl LiquidityPoolContract {
             .get(&DataKey::TotalShares)
             .unwrap_or(0);
 
-        let shares = if total == 0 {
+        let (shares, actual_a, actual_b) = if total == 0 {
             // First deposit: geometric mean as initial share supply
             let product = amount_a.checked_mul(amount_b).ok_or(Error::ArithmeticOverflow)?;
-            sqrt(product)
+            (sqrt(product), amount_a, amount_b)
         } else {
-            // Pro-rata: min of both ratios to prevent dilution
+            // Compute shares and optimal amounts
             let s_a = amount_a.checked_mul(total).ok_or(Error::ArithmeticOverflow)? / reserve_a;
             let s_b = amount_b.checked_mul(total).ok_or(Error::ArithmeticOverflow)? / reserve_b;
-            s_a.min(s_b)
+            let shares = s_a.min(s_b);
+            
+            // Compute optimal amounts to mint exactly 'shares' shares
+            let optimal_a = shares.checked_mul(reserve_a).ok_or(Error::ArithmeticOverflow)? / total;
+            let optimal_b = shares.checked_mul(reserve_b).ok_or(Error::ArithmeticOverflow)? / total;
+            
+            (shares, optimal_a, optimal_b)
         };
 
         if shares <= 0 {
@@ -147,15 +154,15 @@ impl LiquidityPoolContract {
             .get(&DataKey::TokenB)
             .ok_or(Error::NotInitialized)?;
         let pool = env.current_contract_address();
-        token::Client::new(&env, &token_a).transfer(&provider, &pool, &amount_a);
-        token::Client::new(&env, &token_b).transfer(&provider, &pool, &amount_b);
+        token::Client::new(&env, &token_a).transfer(&provider, &pool, &actual_a);
+        token::Client::new(&env, &token_b).transfer(&provider, &pool, &actual_b);
 
         env.storage()
             .instance()
-            .set(&DataKey::ReserveA, &(reserve_a + amount_a));
+            .set(&DataKey::ReserveA, &(reserve_a + actual_a));
         env.storage()
             .instance()
-            .set(&DataKey::ReserveB, &(reserve_b + amount_b));
+            .set(&DataKey::ReserveB, &(reserve_b + actual_b));
         env.storage()
             .instance()
             .set(&DataKey::TotalShares, &(total + shares));
@@ -171,7 +178,7 @@ impl LiquidityPoolContract {
 
         env.events().publish(
             (symbol_short!("ADD_LIQ"), provider),
-            (amount_a, amount_b, shares),
+            (actual_a, actual_b, shares),
         );
         Ok(shares)
     }
