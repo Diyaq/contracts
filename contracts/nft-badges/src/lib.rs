@@ -106,7 +106,7 @@ impl NftBadgesContract {
             if let Some(existing) = env.storage().persistent()
                 .get::<_, BadgeMetadata>(&DataKey::Badge(existing_id))
             {
-                if existing.badge_type == badge_type {
+                if existing.badge_type == badge_type && !existing.revoked {
                     return Err(Error::AlreadyMinted);
                 }
             }

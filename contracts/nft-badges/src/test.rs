@@ -117,3 +117,18 @@ fn duplicate_mint_same_recipient_and_badge_type_is_rejected() {
         .unwrap();
     assert_eq!(err, Error::AlreadyMinted);
 }
+
+#[test]
+fn revoked_badge_allows_remint_of_same_type() {
+    let (env, client, admin) = setup();
+    let student = Address::generate(&env);
+    let id = client.mint(&admin, &student, &s(&env, "completion"), &s(&env, "A"), &s(&env, "u1"));
+
+    client.revoke(&admin, &id, &s(&env, "issued in error"));
+
+    // Re-mint of the same badge_type must succeed after revocation.
+    let id2 = client.mint(&admin, &student, &s(&env, "completion"), &s(&env, "A"), &s(&env, "u2"));
+    assert!(id2 > id);
+    let badge2 = client.get_badge(&id2);
+    assert!(!badge2.revoked);
+}
