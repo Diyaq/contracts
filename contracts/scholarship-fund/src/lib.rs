@@ -23,13 +23,13 @@
 //! invalid recipients. Deposit/withdrawal amounts immutable once recorded. Fund balance enforced
 //! mathematically. Authorization required before disbursement.
 
-use soroban_sdk::{contract,contracterror,contractimpl,contracttype,symbol_short,Address,Env,String};
+use soroban_sdk::{contract,contracterror,contractimpl,contracttype,symbol_short,token,Address,Env,String};
 #[contracterror]
 #[derive(Copy,Clone,Debug,Eq,PartialEq)]
 #[repr(u32)]
 pub enum Error{NotInitialized=1,AlreadyInitialized=2,Unauthorized=3,ZeroAmount=4,InsufficientFunds=5,FundsCommitted=6,RecipientNotEligible=7,RecipientCapExceeded=8}
 #[contracttype]
-pub enum DataKey{Admin,PoolBalance,CommittedFunds,Deposit(Address),Eligible(Address),RecipientAwards(Address),RecipientCap(Address)}
+pub enum DataKey{Admin,Token,PoolBalance,CommittedFunds,Deposit(Address),Eligible(Address),RecipientAwards(Address),RecipientCap(Address)}
 #[contracttype]
 #[derive(Clone,Debug,Eq,PartialEq)]
 pub struct FundStats{pub pool_balance:i128,pub committed_balance:i128}
@@ -37,19 +37,23 @@ pub struct FundStats{pub pool_balance:i128,pub committed_balance:i128}
 pub struct ScholarshipFundContract;
 #[contractimpl]
 impl ScholarshipFundContract{
-    pub fn initialize(env:Env,admin:Address)->Result<(),Error>{
+    pub fn initialize(env:Env,admin:Address,token:Address)->Result<(),Error>{
         if env.storage().instance().has(&DataKey::Admin){return Err(Error::AlreadyInitialized);}
         env.storage().instance().set(&DataKey::Admin,&admin);
+        env.storage().instance().set(&DataKey::Token,&token);
         env.storage().instance().set(&DataKey::PoolBalance,&0i128);
         Ok(())
     }
     pub fn deposit(env:Env,depositor:Address,amount:i128)->Result<(),Error>{
         depositor.require_auth();
         if amount<=0{return Err(Error::ZeroAmount);}
+        let token_addr:Address=env.storage().instance().get(&DataKey::Token).ok_or(Error::NotInitialized)?;
+        let pool=env.current_contract_address();
+        token::Client::new(&env,&token_addr).transfer(&depositor,&pool,&amount);
         let prev:i128=env.storage().persistent().get(&DataKey::Deposit(depositor.clone())).unwrap_or(0);
         env.storage().persistent().set(&DataKey::Deposit(depositor.clone()),&(prev+amount));
-        let pool:i128=env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0);
-        env.storage().instance().set(&DataKey::PoolBalance,&(pool+amount));
+        let pool_bal:i128=env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0);
+        env.storage().instance().set(&DataKey::PoolBalance,&(pool_bal+amount));
         env.events().publish((symbol_short!("DEPOSIT"),depositor),amount);
         Ok(())
     }
@@ -62,6 +66,9 @@ impl ScholarshipFundContract{
         if pool<amount{return Err(Error::InsufficientFunds);}
         let committed:i128=env.storage().instance().get(&DataKey::CommittedFunds).unwrap_or(0);
         if pool-committed<amount{return Err(Error::FundsCommitted);}
+        let token_addr:Address=env.storage().instance().get(&DataKey::Token).ok_or(Error::NotInitialized)?;
+        let pool_addr=env.current_contract_address();
+        token::Client::new(&env,&token_addr).transfer(&pool_addr,&depositor,&amount);
         env.storage().persistent().set(&DataKey::Deposit(depositor.clone()),&(held-amount));
         env.storage().instance().set(&DataKey::PoolBalance,&(pool-amount));
         env.events().publish((symbol_short!("WITHDRAW"),depositor),amount);
@@ -93,6 +100,9 @@ impl ScholarshipFundContract{
         if cap>0 && prior_awards+amount>cap{return Err(Error::RecipientCapExceeded);}
         let pool:i128=env.storage().instance().get(&DataKey::PoolBalance).unwrap_or(0);
         if pool<amount{return Err(Error::InsufficientFunds);}
+        let token_addr:Address=env.storage().instance().get(&DataKey::Token).ok_or(Error::NotInitialized)?;
+        let pool_addr=env.current_contract_address();
+        token::Client::new(&env,&token_addr).transfer(&pool_addr,&recipient,&amount);
         env.storage().instance().set(&DataKey::PoolBalance,&(pool-amount));
         let committed:i128=env.storage().instance().get(&DataKey::CommittedFunds).unwrap_or(0);
         if committed>0{
