@@ -256,9 +256,10 @@ impl LiquidityPoolContract {
         Ok((out_a, out_b))
     }
 
-    /// Swap amount_in of token A for token B.
+    /// Swap tokens: if zero_for_one is true, swap token_a for token_b; else swap token_b for token_a.
+    /// amount_in: amount of input token to trade.
     /// min_out: minimum acceptable output (slippage protection).
-    pub fn swap(env: Env, trader: Address, amount_in: i128, min_out: i128) -> Result<i128, Error> {
+    pub fn swap(env: Env, trader: Address, amount_in: i128, min_out: i128, zero_for_one: bool) -> Result<i128, Error> {
         trader.require_auth();
         if amount_in <= 0 {
             return Err(Error::ZeroAmount);
@@ -277,43 +278,68 @@ impl LiquidityPoolContract {
             return Err(Error::InsufficientLiquidity);
         }
 
+        let (token_in, token_out, reserve_in, reserve_out) = if zero_for_one {
+            let token_a: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::TokenA)
+                .ok_or(Error::NotInitialized)?;
+            let token_b: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::TokenB)
+                .ok_or(Error::NotInitialized)?;
+            (token_a, token_b, reserve_a, reserve_b)
+        } else {
+            let token_a: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::TokenA)
+                .ok_or(Error::NotInitialized)?;
+            let token_b: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::TokenB)
+                .ok_or(Error::NotInitialized)?;
+            (token_b, token_a, reserve_b, reserve_a)
+        };
+
         // Constant-product AMM with fee: (x + dx*(1-fee)) * (y - dy) = x * y
         let amount_in_with_fee = amount_in
             .checked_mul(10_000 - POOL_FEE_BPS)
             .ok_or(Error::ArithmeticOverflow)?
             / 10_000;
-        let amount_out = reserve_b
+        let amount_out = reserve_out
             .checked_mul(amount_in_with_fee)
             .ok_or(Error::ArithmeticOverflow)?
-            / (reserve_a + amount_in_with_fee);
+            / (reserve_in + amount_in_with_fee);
 
         if amount_out < min_out {
             return Err(Error::SlippageExceeded);
         }
 
-        let token_a: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::TokenA)
-            .ok_or(Error::NotInitialized)?;
-        let token_b: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::TokenB)
-            .ok_or(Error::NotInitialized)?;
         let pool = env.current_contract_address();
-        token::Client::new(&env, &token_a).transfer(&trader, &pool, &amount_in);
-        token::Client::new(&env, &token_b).transfer(&pool, &trader, &amount_out);
+        token::Client::new(&env, &token_in).transfer(&trader, &pool, &amount_in);
+        token::Client::new(&env, &token_out).transfer(&pool, &trader, &amount_out);
 
-        env.storage()
-            .instance()
-            .set(&DataKey::ReserveA, &(reserve_a + amount_in));
-        env.storage()
-            .instance()
-            .set(&DataKey::ReserveB, &(reserve_b - amount_out));
+        if zero_for_one {
+            env.storage()
+                .instance()
+                .set(&DataKey::ReserveA, &(reserve_a + amount_in));
+            env.storage()
+                .instance()
+                .set(&DataKey::ReserveB, &(reserve_b - amount_out));
+        } else {
+            env.storage()
+                .instance()
+                .set(&DataKey::ReserveB, &(reserve_b + amount_in));
+            env.storage()
+                .instance()
+                .set(&DataKey::ReserveA, &(reserve_a - amount_out));
+        }
 
         env.events()
-            .publish((symbol_short!("SWAP"), trader), (amount_in, amount_out));
+            .publish((symbol_short!("SWAP"), trader), (amount_in, amount_out, zero_for_one));
         Ok(amount_out)
     }
 
