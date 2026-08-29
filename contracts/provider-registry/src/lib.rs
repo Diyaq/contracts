@@ -202,6 +202,13 @@ impl ProviderRegistry {
         let mut results: Vec<BatchEntryStatus> = Vec::new(&env);
 
         for entry in entries.iter() {
+            if validate_nonzero_address(&entry.provider).is_err()
+                || validate_nonzero_address(&entry.issuer).is_err()
+            {
+                results.push_back(BatchEntryStatus::InvalidAddress);
+                continue;
+            }
+
             let key = DataKey::Provider(entry.provider.clone());
             if env.storage().persistent().has(&key) {
                 results.push_back(BatchEntryStatus::AlreadyExists);
