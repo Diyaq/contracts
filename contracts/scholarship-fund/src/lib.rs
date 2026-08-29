@@ -38,6 +38,7 @@ pub struct ScholarshipFundContract;
 #[contractimpl]
 impl ScholarshipFundContract{
     pub fn initialize(env:Env,admin:Address)->Result<(),Error>{
+        admin.require_auth();
         if env.storage().instance().has(&DataKey::Admin){return Err(Error::AlreadyInitialized);}
         env.storage().instance().set(&DataKey::Admin,&admin);
         env.storage().instance().set(&DataKey::PoolBalance,&0i128);

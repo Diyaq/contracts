@@ -21,6 +21,8 @@ pub enum Error {
     InvalidDoseNumber = 3,
     AlreadyInitialized = 4,
     NotInitialized = 5,
+    InvalidAdministrationDate = 6,
+    VaccineExpired = 7,
 }
 
 #[contracttype]
