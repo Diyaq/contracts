@@ -108,6 +108,7 @@ pub enum DataKey {
     RecordVersion(u64, u32),
     /// Per-caller nonce for replay attack protection: (caller) -> u64
     CallerNonce(Address),
+    Admin,
 }
 
 #[contracterror]
@@ -124,6 +125,7 @@ pub enum Error {
     ProviderNotRegistered = 8,
     VersionNotFound = 9,
     StaleNonce = 10,
+    AlreadyInitialized = 11,
 }
 
 #[soroban_sdk::contractclient(name = "ProviderRegistryClient")]
@@ -204,12 +206,22 @@ pub struct HealthRecords;
 
 #[contractimpl]
 impl HealthRecords {
-    /// Initialize the contract with the provider registry address.
-    pub fn initialize(env: Env, provider_registry: Address) {
+    /// Initialize the contract with an admin and the provider registry address.
+    ///
+    /// `admin` must authorize this call, preventing an unauthorized caller
+    /// from front-running deployment and pointing `provider_registry` at a
+    /// malicious contract. Fails with `Error::AlreadyInitialized` if called
+    /// more than once.
+    pub fn initialize(env: Env, admin: Address, provider_registry: Address) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::ProviderRegistry) {
-            panic!("already initialized");
+            return Err(Error::AlreadyInitialized);
         }
+        validate_nonzero_address(&admin).map_err(|_| Error::InvalidAddress)?;
+        validate_nonzero_address(&provider_registry).map_err(|_| Error::InvalidAddress)?;
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::ProviderRegistry, &provider_registry);
+        Ok(())
     }
 
     /// Patient grants a provider scoped consent to act on their records.
