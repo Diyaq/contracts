@@ -58,12 +58,12 @@ impl ImmunizationRegistry {
         // Validate administration_date is not in the future
         let current_time = env.ledger().timestamp();
         if record.administration_date > current_time {
-            return Err(Error::InvalidDoseNumber);
+            return Err(Error::InvalidAdministrationDate);
         }
 
         // Validate vaccine is not expired at administration
         if record.administration_date > record.expiration_date {
-            return Err(Error::InvalidDoseNumber);
+            return Err(Error::VaccineExpired);
         }
 
         let count: u64 = env
