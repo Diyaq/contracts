@@ -330,8 +330,14 @@ pub struct AppointmentScheduling;
 
 #[contractimpl]
 impl AppointmentScheduling {
-    pub fn create_appointment(env: Env, patient: Address, doctor: Address, datetime: u64) -> u64 {
+    pub fn create_appointment(env: Env, patient: Address, doctor: Address, datetime: u64) -> Result<u64, Error> {
         patient.require_auth();
+
+        // Validate datetime is in the future
+        let current_time = env.ledger().timestamp();
+        if datetime <= current_time {
+            return Err(Error::InvalidDatetime);
+        }
 
         // Get next appointment ID
         let counter_key = AppointmentKey::AppointmentCounter;
@@ -381,13 +387,18 @@ impl AppointmentScheduling {
             .persistent()
             .set(&doctor_key, &doctor_appointments);
 
-        // Emit event
+        // Emit versioned event
         env.events().publish(
-            (symbol_short!("appt_cr"), appointment_id),
-            (patient, doctor),
+            AppointmentCreated {
+                version: EVENT_VERSION,
+                appointment_id,
+                patient: patient.clone(),
+                doctor: doctor.clone(),
+            },
+            (),
         );
 
-        appointment_id
+        Ok(appointment_id)
     }
 
     pub fn cancel_appointment(
@@ -418,9 +429,15 @@ impl AppointmentScheduling {
             .persistent()
             .set(&appointment_key, &appointment);
 
-        // Emit event
+        // Emit versioned event
         env.events()
-            .publish((symbol_short!("appt_can"), appointment_id), patient);
+            .publish(
+                AppointmentCancelled {
+                    version: EVENT_VERSION,
+                    appointment_id,
+                },
+                (),
+            );
         Ok(())
     }
 
@@ -452,9 +469,15 @@ impl AppointmentScheduling {
             .persistent()
             .set(&appointment_key, &appointment);
 
-        // Emit event
+        // Emit versioned event
         env.events()
-            .publish((symbol_short!("appt_cmp"), appointment_id), doctor);
+            .publish(
+                AppointmentCompleted {
+                    version: EVENT_VERSION,
+                    appointment_id,
+                },
+                (),
+            );
         Ok(())
     }
 

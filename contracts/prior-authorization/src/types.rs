@@ -26,6 +26,7 @@ pub enum Error {
     ServiceNotCovered = 20,
     NotInitialized = 21,
     AlreadyInitialized = 22,
+    ArithmeticOverflow = 23,
 }
 
 /// Lifecycle status of a prior authorization request.
@@ -252,8 +253,10 @@ pub enum DataKey {
     Reviewer(Address),
     /// insurer_id -> Vec<Address> (reviewer ids)
     InsurerReviewers(Address),
-    /// urgency -> SLAConfig
-    SLAConfig(Symbol),
+    /// (insurer_id, urgency) -> SLAConfig. Scoped per-insurer so that one
+    /// insurer's SLA policy cannot override another insurer's requests at
+    /// the same urgency (#723).
+    SLAConfig(Address, Symbol),
     /// SLA tracking: stores Vec<u64> of overdue auth_request_ids.
     OverdueAuths,
     /// Address of the deployed insurer-registry contract.
