@@ -315,12 +315,21 @@ impl EmergencyMedicalInfo {
     }
 
     /// Notify emergency contacts
+    ///
+    /// Discloses the patient's emergency contact list and appends an entry to
+    /// their permanent notification log, so access is gated the same way as
+    /// the other emergency read endpoints: the patient themselves, or a
+    /// requester with a prior logged emergency access for this patient (see
+    /// `require_emergency_read_access`).
     pub fn notify_emergency_contacts(
         env: Env,
         patient_id: Address,
+        requester: Address,
         emergency_type: Symbol,
         notification_time: u64,
     ) -> Result<Vec<EmergencyContact>, Error> {
+        Self::require_emergency_read_access(&env, &patient_id, &requester)?;
+
         // Get emergency profile
         let profile_key = DataKey::EmergencyProfile(patient_id.clone());
         let profile: EmergencyProfile = env
