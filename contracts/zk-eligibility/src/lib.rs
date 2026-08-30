@@ -77,6 +77,7 @@ pub enum DataKey {
     /// Nullifier: proof hash → NullifierRecord (schema version + expiry ledger).
     Nullifier(BytesN<32>),
     /// Cached subject eligibility after a successful proof.
+    /// Value is a (bool, u32) tuple: (eligible, expires_at_ledger)
     Eligibility(Address),
     /// Configurable TTL (in ledgers) for nullifier entries.
     NullifierTtlLedgers,
@@ -313,9 +314,17 @@ impl ZkEligibility {
 
         // ── Record nullifier ──────────────────────────────────────────────────
         Self::store_nullifier(&env, &proof_hash, bundle.schema_version);
+        
+        // ── Cache eligibility with expiry ────────────────────────────────────────
+        let eligibility_expires_at = env.ledger().sequence().saturating_add(
+            env.storage()
+                .persistent()
+                .get(&DataKey::NullifierTtlLedgers)
+                .unwrap_or(DEFAULT_NULLIFIER_TTL_LEDGERS),
+        );
         env.storage()
             .persistent()
-            .set(&DataKey::Eligibility(subject.clone()), &true);
+            .set(&DataKey::Eligibility(subject.clone()), &(true, eligibility_expires_at));
 
         env.events().publish(
             (symbol_short!("zk_ok"), subject, bundle.schema_version),
@@ -367,11 +376,23 @@ impl ZkEligibility {
     }
 
     /// Check whether a subject has a cached successful eligibility proof.
+    /// Returns false if the cached entry has expired.
     pub fn is_eligible(env: Env, subject: Address) -> bool {
-        env.storage()
+        let cache_entry: Option<(bool, u32)> = env
+            .storage()
             .persistent()
-            .get(&DataKey::Eligibility(subject))
-            .unwrap_or(false)
+            .get(&DataKey::Eligibility(subject));
+        
+        match cache_entry {
+            Some((eligible, expires_at_ledger)) => {
+                // Check if cache has expired
+                if env.ledger().sequence() >= expires_at_ledger {
+                    return false;
+                }
+                eligible
+            }
+            None => false,
+        }
     }
 
     // ── internal helpers ──────────────────────────────────────────────────────
@@ -427,6 +448,16 @@ impl ZkEligibility {
             return false;
         }
 
+        // ── Expiry check (public_inputs[0] = big-endian u64 expiry timestamp) ─
+        let expiry_input = match bundle.public_inputs.get(EXPIRY_INPUT_IDX) {
+            Some(input) => input,
+            None => return false,
+        };
+        let expiry = Self::decode_expiry_u64(&expiry_input);
+        if expiry <= env.ledger().timestamp() {
+            return false;
+        }
+
         let vk_entry: VerifierKeyEntry = match env
             .storage()
             .persistent()
@@ -449,9 +480,17 @@ impl ZkEligibility {
         }
 
         Self::store_nullifier(env, &proof_hash, bundle.schema_version);
+        
+        // ── Cache eligibility with expiry ────────────────────────────────────────
+        let eligibility_expires_at = env.ledger().sequence().saturating_add(
+            env.storage()
+                .persistent()
+                .get(&DataKey::NullifierTtlLedgers)
+                .unwrap_or(DEFAULT_NULLIFIER_TTL_LEDGERS),
+        );
         env.storage()
             .persistent()
-            .set(&DataKey::Eligibility(subject.clone()), &true);
+            .set(&DataKey::Eligibility(subject.clone()), &(true, eligibility_expires_at));
 
         env.events().publish(
             (symbol_short!("zk_ok"), subject.clone(), bundle.schema_version),
@@ -541,22 +580,31 @@ impl ZkEligibility {
 
     /// Cryptographic verification stub.
     ///
-    /// Production: replace the body with a call to the host's pairing
-    /// verifier or a cross-contract call to a deployed verifier contract.
-    /// The function signature is stable so all callers are unaffected.
+    /// ⚠️ SECURITY: This is a stub for testing only. Production deployments MUST
+    /// be gated behind a feature flag and implement a real Groth16/PLONK pairing
+    /// verifier via host crypto or a dedicated contract. See issue #821.
     ///
-    /// The stub accepts any proof whose first byte equals the first byte of
-    /// the verifier key — a deterministic, testable rule that exercises the
-    /// full call path without requiring real ZK machinery.
+    /// The stub requires:
+    /// 1. Non-empty public_inputs (expiry must be at public_inputs[0])
+    /// 2. First byte of proof must match first byte of verifier key
+    /// This exercises the full call path without requiring real ZK machinery.
+    /// Public inputs are NOT cryptographically bound to the proof in this stub.
     fn run_verification(
         _env: &Env,
         vk: &Bytes,
         proof: &Bytes,
-        _public_inputs: &Vec<BytesN<32>>,
+        public_inputs: &Vec<BytesN<32>>,
     ) -> bool {
         if vk.is_empty() || proof.is_empty() {
             return false;
         }
+        
+        // At minimum, require that public_inputs contains the expiry field
+        // to ensure the caller is not bypassing the proof structure entirely.
+        if public_inputs.is_empty() {
+            return false;
+        }
+        
         vk.get(0) == proof.get(0)
     }
 }
