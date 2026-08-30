@@ -295,10 +295,50 @@ fn test_notify_emergency_contacts() {
     let notification_time = env.ledger().timestamp();
 
     let notified_contacts =
-        client.notify_emergency_contacts(&patient, &emergency_type, &notification_time);
+        client.notify_emergency_contacts(&patient, &patient, &emergency_type, &notification_time);
 
     assert_eq!(notified_contacts.len(), 2);
     assert_eq!(notified_contacts.get(0).unwrap().priority, 1);
+}
+
+#[test]
+fn test_notify_emergency_contacts_rejects_unauthorized_caller() {
+    let env = Env::default();
+    let contract_id = env.register(EmergencyMedicalInfo, ());
+    let client = EmergencyMedicalInfoClient::new(&env, &contract_id);
+
+    let patient = Address::generate(&env);
+    let unauthorized_caller = Address::generate(&env);
+    env.mock_all_auths();
+
+    // Setup profile with contacts
+    let blood_type = Symbol::new(&env, "A_POS");
+    let mut allergies = Vec::new(&env);
+    allergies.push_back(hash(&env, 21));
+    let conditions = Vec::new(&env);
+    let medications = Vec::new(&env);
+    let contacts = create_test_emergency_contacts(&env);
+
+    client.set_emergency_profile(
+        &patient,
+        &blood_type,
+        &allergies,
+        &conditions,
+        &medications,
+        &contacts,
+        &None,
+    );
+
+    // A caller who is neither the patient nor a requester with a prior
+    // logged emergency access must not be able to pull the emergency
+    // contact list or write an entry into the patient's notification log.
+    let result = client.try_notify_emergency_contacts(
+        &patient,
+        &unauthorized_caller,
+        &Symbol::new(&env, "TRAUMA"),
+        &env.ledger().timestamp(),
+    );
+    assert_eq!(result, Err(Ok(Error::NotAuthorized)));
 }
 
 #[test]
@@ -673,9 +713,11 @@ fn test_comprehensive_emergency_scenario() {
         &hash(&env, 51),
     );
 
-    // 4. Notify contacts
+    // 4. Notify contacts (provider already has a logged emergency access
+    // from step 3, so they satisfy the read-access gate as a requester)
     let notified = client.notify_emergency_contacts(
         &patient,
+        &provider,
         &Symbol::new(&env, "RESP_DIST"),
         &env.ledger().timestamp(),
     );

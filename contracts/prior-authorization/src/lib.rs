@@ -205,8 +205,8 @@ impl PriorAuthorizationContract {
 
         let auth_request_id = next_auth_id(&env);
 
-        // Calculate SLA deadline based on urgency
-        let sla_config = load_sla_config(&env, &urgency).unwrap_or(SLAConfig {
+        // Calculate SLA deadline based on the insurer's per-urgency policy (#723).
+        let sla_config = load_sla_config(&env, &insurer_wallet, &urgency).unwrap_or(SLAConfig {
             urgency: urgency.clone(),
             standard_deadline_hours: 72,  // 3 days default
             expedited_deadline_hours: 24, // 1 day default
@@ -222,7 +222,16 @@ impl PriorAuthorizationContract {
             sla_config.standard_deadline_hours
         };
 
-        let sla_deadline = env.ledger().timestamp() + (deadline_hours * 3600); // Convert hours to seconds
+        // Convert hours to seconds using checked arithmetic so an oversized
+        // insurer-configured deadline cannot overflow and panic (#723).
+        let deadline_secs = deadline_hours
+            .checked_mul(3600)
+            .ok_or(Error::ArithmeticOverflow)?;
+        let sla_deadline = env
+            .ledger()
+            .timestamp()
+            .checked_add(deadline_secs)
+            .ok_or(Error::ArithmeticOverflow)?;
 
         let req = AuthorizationRequest {
             auth_request_id,
@@ -358,8 +367,10 @@ impl PriorAuthorizationContract {
         let reviewer_role_sym = Symbol::new(&env, "reviewer");
         let case_manager_role = Symbol::new(&env, "case_manager");
 
-        // Check if medical director is required for this type
-        let sla_config = load_sla_config(&env, &req.urgency);
+        // Check if medical director is required for this type. Looked up by
+        // this request's insurer + urgency so one insurer's SLA policy can
+        // never affect another insurer's requests (#723).
+        let sla_config = load_sla_config(&env, &req.insurer_id, &req.urgency);
         if let Some(config) = sla_config {
             if config.requires_medical_director && reviewer.role != medical_director_role {
                 return Err(Error::InvalidReviewerRole);
@@ -836,6 +847,19 @@ impl PriorAuthorizationContract {
     ) -> Result<(), Error> {
         insurer_id.require_auth();
 
+        // Cross-check that the insurer is actually registered in the insurer-registry (#723).
+        // Without this, any self-signed address could configure SLA policy — including
+        // whether a medical director is required to approve requests.
+        let insurer_registry_id: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::InsurerRegistryId)
+            .ok_or(Error::NotInitialized)?;
+        let registry = InsurerRegistryClient::new(&env, &insurer_registry_id);
+        if !registry.is_insurer_active(&insurer_id) {
+            return Err(Error::Unauthorized);
+        }
+
         let config = SLAConfig {
             urgency: urgency.clone(),
             standard_deadline_hours,
@@ -843,7 +867,9 @@ impl PriorAuthorizationContract {
             auto_approval_threshold,
             requires_medical_director,
         };
-        save_sla_config(&env, &config);
+        // Keyed by (insurer_id, urgency) so one insurer's SLA policy cannot
+        // overwrite another insurer's requests at the same urgency (#723).
+        save_sla_config(&env, &insurer_id, &config);
 
         env.events().publish(
             (Symbol::new(&env, "sla_configured"),),

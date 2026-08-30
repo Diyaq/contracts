@@ -184,6 +184,84 @@ fn test_configure_sla_success() {
     );
 }
 
+#[test]
+fn test_configure_sla_rejects_non_insurer() {
+    let (env, insurer, _provider, _patient) = setup();
+    let client = make_contract(&env, &insurer);
+
+    // An address that was never registered in the insurer-registry must be
+    // rejected even though `mock_all_auths` makes the `require_auth()` check
+    // pass on its own (#723).
+    let non_insurer = Address::generate(&env);
+
+    let result = client.try_configure_sla(
+        &non_insurer,
+        &Symbol::new(&env, "standard"),
+        &72u64,
+        &24u64,
+        &30u32,
+        &false,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_configure_sla_is_scoped_per_insurer() {
+    let (env, insurer_a, provider, patient) = setup();
+    let ir_id = setup_insurer_registry(&env, &insurer_a);
+
+    // Register a second, independent insurer on the same insurer-registry
+    // instance so it is also active.
+    let insurer_b = Address::generate(&env);
+    let ir_client = InsurerRegistryClient::new(&env, &ir_id);
+    let issuer = Address::generate(&env);
+    ir_client.register_insurer(
+        &insurer_b,
+        &String::from_str(&env, "Second Insurer"),
+        &String::from_str(&env, "LIC-002"),
+        &String::from_str(&env, "metadata"),
+        &dummy_hash(&env, 4),
+        &issuer,
+        &dummy_hash(&env, 5),
+        &4_100_000_000_u64,
+        &dummy_hash(&env, 6),
+    );
+
+    let contract_id = env.register(PriorAuthorizationContract, ());
+    let client = PriorAuthorizationContractClient::new(&env, &contract_id);
+    client.initialize(&ir_id);
+
+    let urgency = Symbol::new(&env, "routine");
+
+    // Insurer A requires medical-director sign-off for "routine" requests.
+    client.configure_sla(&insurer_a, &urgency, &72u64, &24u64, &30u32, &true);
+
+    // Insurer B configures the SAME urgency for its own requests with a
+    // laxer policy. Before the fix this overwrote the single shared
+    // SLAConfig(urgency) entry and silently disabled insurer A's
+    // medical-director requirement.
+    client.configure_sla(&insurer_b, &urgency, &72u64, &24u64, &30u32, &false);
+
+    let auth_id = submit_auth(&env, &client, &provider, &patient, &insurer_a, &urgency);
+
+    // A non-medical-director reviewer on insurer A's own roster must still
+    // be rejected, proving insurer A's stricter policy was not clobbered by
+    // insurer B's later call at the same urgency (#723).
+    let reviewer = Address::generate(&env);
+    register_reviewer(&env, &client, &insurer_a, &reviewer);
+
+    let result = client.try_review_authorization(
+        &auth_id,
+        &reviewer,
+        &Symbol::new(&env, "approved"),
+        &Some(5u32),
+        &Some(1_000_000u64),
+        &Some(9_000_000u64),
+        &String::from_str(&env, "Attempting approval without medical director"),
+    );
+    assert!(result.is_err());
+}
+
 // ── SLA breach detection ─────────────────────────────────────────────────────
 
 #[test]

@@ -10,6 +10,7 @@ pub enum DataKey {
     PatientVaccineSeries(Address), // List of VaccineSeries
     LotImmunizations(String),      // List of IDs (u64) administered from this lot
     Regulator,                     // Address authorized for public-health/recall queries
+    ProviderRegistry,              // Address of the provider-registry contract
 }
 
 #[contracterror]
@@ -21,6 +22,8 @@ pub enum Error {
     InvalidDoseNumber = 3,
     AlreadyInitialized = 4,
     NotInitialized = 5,
+    InvalidAdministrationDate = 6,
+    VaccineExpired = 7,
 }
 
 #[contracttype]

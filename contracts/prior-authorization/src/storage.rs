@@ -269,16 +269,17 @@ pub fn update_reviewer_case_count(env: &Env, reviewer_id: &Address, delta: i32) 
 // SLA Configuration
 // -----------------------------------------------------------------------
 
-pub fn save_sla_config(env: &Env, config: &SLAConfig) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::SLAConfig(config.urgency.clone()), config);
+pub fn save_sla_config(env: &Env, insurer_id: &Address, config: &SLAConfig) {
+    env.storage().persistent().set(
+        &DataKey::SLAConfig(insurer_id.clone(), config.urgency.clone()),
+        config,
+    );
 }
 
-pub fn load_sla_config(env: &Env, urgency: &Symbol) -> Option<SLAConfig> {
+pub fn load_sla_config(env: &Env, insurer_id: &Address, urgency: &Symbol) -> Option<SLAConfig> {
     env.storage()
         .persistent()
-        .get(&DataKey::SLAConfig(urgency.clone()))
+        .get(&DataKey::SLAConfig(insurer_id.clone(), urgency.clone()))
 }
 
 // -----------------------------------------------------------------------

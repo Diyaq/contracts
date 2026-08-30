@@ -81,6 +81,7 @@ impl LiquidityPoolContract {
         token_a: Address,
         token_b: Address,
     ) -> Result<(), Error> {
+        admin.require_auth();
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
@@ -94,6 +95,7 @@ impl LiquidityPoolContract {
     }
 
     /// Deposit token_a and token_b amounts; mint LP shares proportionally.
+    /// For non-initial deposits, computes optimal amounts to maintain pool ratio.
     pub fn add_liquidity(
         env: Env,
         provider: Address,
@@ -120,15 +122,21 @@ impl LiquidityPoolContract {
             .get(&DataKey::TotalShares)
             .unwrap_or(0);
 
-        let shares = if total == 0 {
+        let (shares, actual_a, actual_b) = if total == 0 {
             // First deposit: geometric mean as initial share supply
             let product = amount_a.checked_mul(amount_b).ok_or(Error::ArithmeticOverflow)?;
-            sqrt(product)
+            (sqrt(product), amount_a, amount_b)
         } else {
-            // Pro-rata: min of both ratios to prevent dilution
+            // Compute shares and optimal amounts
             let s_a = amount_a.checked_mul(total).ok_or(Error::ArithmeticOverflow)? / reserve_a;
             let s_b = amount_b.checked_mul(total).ok_or(Error::ArithmeticOverflow)? / reserve_b;
-            s_a.min(s_b)
+            let shares = s_a.min(s_b);
+            
+            // Compute optimal amounts to mint exactly 'shares' shares
+            let optimal_a = shares.checked_mul(reserve_a).ok_or(Error::ArithmeticOverflow)? / total;
+            let optimal_b = shares.checked_mul(reserve_b).ok_or(Error::ArithmeticOverflow)? / total;
+            
+            (shares, optimal_a, optimal_b)
         };
 
         if shares <= 0 {
@@ -146,15 +154,15 @@ impl LiquidityPoolContract {
             .get(&DataKey::TokenB)
             .ok_or(Error::NotInitialized)?;
         let pool = env.current_contract_address();
-        token::Client::new(&env, &token_a).transfer(&provider, &pool, &amount_a);
-        token::Client::new(&env, &token_b).transfer(&provider, &pool, &amount_b);
+        token::Client::new(&env, &token_a).transfer(&provider, &pool, &actual_a);
+        token::Client::new(&env, &token_b).transfer(&provider, &pool, &actual_b);
 
         env.storage()
             .instance()
-            .set(&DataKey::ReserveA, &(reserve_a + amount_a));
+            .set(&DataKey::ReserveA, &(reserve_a + actual_a));
         env.storage()
             .instance()
-            .set(&DataKey::ReserveB, &(reserve_b + amount_b));
+            .set(&DataKey::ReserveB, &(reserve_b + actual_b));
         env.storage()
             .instance()
             .set(&DataKey::TotalShares, &(total + shares));
@@ -170,7 +178,7 @@ impl LiquidityPoolContract {
 
         env.events().publish(
             (symbol_short!("ADD_LIQ"), provider),
-            (amount_a, amount_b, shares),
+            (actual_a, actual_b, shares),
         );
         Ok(shares)
     }
@@ -248,9 +256,10 @@ impl LiquidityPoolContract {
         Ok((out_a, out_b))
     }
 
-    /// Swap amount_in of token A for token B.
+    /// Swap tokens: if zero_for_one is true, swap token_a for token_b; else swap token_b for token_a.
+    /// amount_in: amount of input token to trade.
     /// min_out: minimum acceptable output (slippage protection).
-    pub fn swap(env: Env, trader: Address, amount_in: i128, min_out: i128) -> Result<i128, Error> {
+    pub fn swap(env: Env, trader: Address, amount_in: i128, min_out: i128, zero_for_one: bool) -> Result<i128, Error> {
         trader.require_auth();
         if amount_in <= 0 {
             return Err(Error::ZeroAmount);
@@ -269,43 +278,68 @@ impl LiquidityPoolContract {
             return Err(Error::InsufficientLiquidity);
         }
 
+        let (token_in, token_out, reserve_in, reserve_out) = if zero_for_one {
+            let token_a: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::TokenA)
+                .ok_or(Error::NotInitialized)?;
+            let token_b: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::TokenB)
+                .ok_or(Error::NotInitialized)?;
+            (token_a, token_b, reserve_a, reserve_b)
+        } else {
+            let token_a: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::TokenA)
+                .ok_or(Error::NotInitialized)?;
+            let token_b: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::TokenB)
+                .ok_or(Error::NotInitialized)?;
+            (token_b, token_a, reserve_b, reserve_a)
+        };
+
         // Constant-product AMM with fee: (x + dx*(1-fee)) * (y - dy) = x * y
         let amount_in_with_fee = amount_in
             .checked_mul(10_000 - POOL_FEE_BPS)
             .ok_or(Error::ArithmeticOverflow)?
             / 10_000;
-        let amount_out = reserve_b
+        let amount_out = reserve_out
             .checked_mul(amount_in_with_fee)
             .ok_or(Error::ArithmeticOverflow)?
-            / (reserve_a + amount_in_with_fee);
+            / (reserve_in + amount_in_with_fee);
 
         if amount_out < min_out {
             return Err(Error::SlippageExceeded);
         }
 
-        let token_a: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::TokenA)
-            .ok_or(Error::NotInitialized)?;
-        let token_b: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::TokenB)
-            .ok_or(Error::NotInitialized)?;
         let pool = env.current_contract_address();
-        token::Client::new(&env, &token_a).transfer(&trader, &pool, &amount_in);
-        token::Client::new(&env, &token_b).transfer(&pool, &trader, &amount_out);
+        token::Client::new(&env, &token_in).transfer(&trader, &pool, &amount_in);
+        token::Client::new(&env, &token_out).transfer(&pool, &trader, &amount_out);
 
-        env.storage()
-            .instance()
-            .set(&DataKey::ReserveA, &(reserve_a + amount_in));
-        env.storage()
-            .instance()
-            .set(&DataKey::ReserveB, &(reserve_b - amount_out));
+        if zero_for_one {
+            env.storage()
+                .instance()
+                .set(&DataKey::ReserveA, &(reserve_a + amount_in));
+            env.storage()
+                .instance()
+                .set(&DataKey::ReserveB, &(reserve_b - amount_out));
+        } else {
+            env.storage()
+                .instance()
+                .set(&DataKey::ReserveB, &(reserve_b + amount_in));
+            env.storage()
+                .instance()
+                .set(&DataKey::ReserveA, &(reserve_a - amount_out));
+        }
 
         env.events()
-            .publish((symbol_short!("SWAP"), trader), (amount_in, amount_out));
+            .publish((symbol_short!("SWAP"), trader), (amount_in, amount_out, zero_for_one));
         Ok(amount_out)
     }
 

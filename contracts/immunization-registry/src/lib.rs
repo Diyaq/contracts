@@ -36,19 +36,36 @@ pub struct ImmunizationRegistry;
 
 #[contractimpl]
 impl ImmunizationRegistry {
-    /// Configure the regulator/public-health authority address allowed to run recall queries.
-    pub fn initialize(env: Env, regulator: Address) -> Result<(), Error> {
+    /// Configure the regulator/public-health authority and provider-registry contract address.
+    pub fn initialize(env: Env, regulator: Address, provider_registry: Address) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Regulator) {
             return Err(Error::AlreadyInitialized);
         }
 
         regulator.require_auth();
         env.storage().instance().set(&DataKey::Regulator, &regulator);
+        env.storage().instance().set(&DataKey::ProviderRegistry, &provider_registry);
         Ok(())
     }
 
     pub fn record_immunization(env: Env, record: VaccineRecord) -> Result<u64, Error> {
         record.provider_id.require_auth();
+        record.patient_id.require_auth();
+
+        // Verify caller is a registered provider.
+        let provider_registry: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProviderRegistry)
+            .ok_or(Error::NotInitialized)?;
+        let is_registered: bool = env.invoke_contract(
+            &provider_registry,
+            &Symbol::new(&env, "is_provider"),
+            soroban_sdk::vec![&env, record.provider_id.clone().into_val(&env)],
+        );
+        if !is_registered {
+            return Err(Error::NotAuthorized);
+        }
 
         // Validate dose_number is not zero
         if record.dose_number == 0 {
@@ -58,12 +75,12 @@ impl ImmunizationRegistry {
         // Validate administration_date is not in the future
         let current_time = env.ledger().timestamp();
         if record.administration_date > current_time {
-            return Err(Error::InvalidDoseNumber);
+            return Err(Error::InvalidAdministrationDate);
         }
 
         // Validate vaccine is not expired at administration
         if record.administration_date > record.expiration_date {
-            return Err(Error::InvalidDoseNumber);
+            return Err(Error::VaccineExpired);
         }
 
         let count: u64 = env
@@ -164,12 +181,18 @@ impl ImmunizationRegistry {
     ) -> Result<(), Error> {
         reporter.require_auth();
 
-        if !env
+        let record: VaccineRecord = env
             .storage()
             .persistent()
-            .has(&DataKey::ImmunizationRecord(immunization_id))
-        {
-            return Err(Error::RecordNotFound);
+            .get(&DataKey::ImmunizationRecord(immunization_id))
+            .ok_or(Error::RecordNotFound)?;
+
+        let regulator: Option<Address> = env.storage().instance().get(&DataKey::Regulator);
+        let authorized = reporter == record.provider_id
+            || reporter == record.patient_id
+            || regulator.map(|r| reporter == r).unwrap_or(false);
+        if !authorized {
+            return Err(Error::NotAuthorized);
         }
 
         let event = AdverseEvent {
