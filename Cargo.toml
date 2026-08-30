@@ -45,6 +45,7 @@ members = [
   "contracts/scholarship-fund",
   "contracts/liquidity-pool",
   "contracts/ttl-config",
+  "contracts/nft-badges",
 ]
 exclude = ["contracts/patient-registry/benches"]
 

@@ -999,6 +999,7 @@ dependencies = [
 name = "immunization-registry"
 version = "0.0.0"
 dependencies = [
+ "provider-registry",
  "soroban-sdk",
 ]
 
@@ -1173,6 +1174,13 @@ dependencies = [
 
 [[package]]
 name = "multisig-governance"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "nft-badges"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
